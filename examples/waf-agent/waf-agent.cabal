@@ -1,0 +1,34 @@
+cabal-version:   3.0
+name:            waf-agent
+version:         0.1.0.0
+synopsis:        WAF-style agent example for Sentinel
+description:
+  A more complete Sentinel agent example demonstrating stateful
+  request handling, blocking rules, metrics collection, and
+  health reporting.
+
+license:         Apache-2.0
+license-file:    ../../LICENSE
+author:          Raskell
+maintainer:      agents@raskell.io
+copyright:       2026 Raskell
+category:        Network, Security
+build-type:      Simple
+
+executable waf-agent
+  main-is:          Main.hs
+  default-language: GHC2021
+  hs-source-dirs:   .
+
+  build-depends:
+    , base                     >= 4.19 && < 5
+    , sentinel-agent-protocol
+    , text                     >= 2.1
+    , mtl                      >= 2.3
+    , unordered-containers     >= 0.2.20
+
+  ghc-options: -Wall -threaded -rtsopts -with-rtsopts=-N
+
+  default-extensions:
+    OverloadedRecordDot
+    OverloadedStrings

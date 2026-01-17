@@ -1,0 +1,23 @@
+packages:
+  sentinel-agent-protocol/
+  examples/echo-agent/
+  examples/waf-agent/
+
+-- Use latest GHC
+with-compiler: ghc-9.8
+
+-- Optimization settings
+optimization: 1
+
+-- Documentation
+haddock-hyperlinked-source: True
+haddock-quickjump: True
+
+-- Test settings
+tests: True
+test-show-details: streaming
+
+-- Allow newer dependencies for compatibility
+allow-newer:
+  -- Sometimes needed for newer GHC versions
+  base
