@@ -1,13 +1,13 @@
 -- |
--- Module      : Sentinel.Agent.Metrics
--- Description : Metrics collection and export for Sentinel agents
+-- Module      : Zentinel.Agent.Metrics
+-- Description : Metrics collection and export for Zentinel agents
 -- Copyright   : (c) Raskell, 2026
 -- License     : Apache-2.0
 -- Maintainer  : agents@raskell.io
 -- Stability   : experimental
 --
 -- This module provides utilities for metrics collection and export
--- in Sentinel agents. Metrics are periodically collected and sent
+-- in Zentinel agents. Metrics are periodically collected and sent
 -- to the proxy for aggregation and monitoring.
 --
 -- = Metric Types
@@ -44,7 +44,7 @@
 --       []
 --       []
 -- @
-module Sentinel.Agent.Metrics
+module Zentinel.Agent.Metrics
   ( -- * Report Builders
     newMetricsReport
   , emptyMetricsReport
@@ -89,7 +89,7 @@ import Data.IORef
 import Data.List (sort)
 import Data.Text (Text)
 import Data.Word (Word64)
-import Sentinel.Agent.Types
+import Zentinel.Agent.Types
 import UnliftIO (MonadIO, liftIO)
 
 --------------------------------------------------------------------------------

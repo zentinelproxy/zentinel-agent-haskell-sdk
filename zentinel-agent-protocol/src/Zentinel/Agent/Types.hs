@@ -1,17 +1,17 @@
 {-# LANGUAGE DataKinds #-}
 
 -- |
--- Module      : Sentinel.Agent.Types
--- Description : Core types for Sentinel Agent Protocol v2
+-- Module      : Zentinel.Agent.Types
+-- Description : Core types for Zentinel Agent Protocol v2
 -- Copyright   : (c) Raskell, 2026
 -- License     : Apache-2.0
 -- Maintainer  : agents@raskell.io
 -- Stability   : experimental
 --
--- This module defines all data types used in the Sentinel Agent Protocol v2,
+-- This module defines all data types used in the Zentinel Agent Protocol v2,
 -- including events, decisions, capabilities, health status, and metrics.
 -- All types use JSON serialization compatible with the Rust implementation.
-module Sentinel.Agent.Types
+module Zentinel.Agent.Types
   ( -- * Protocol Constants
     protocolVersion
   , maxMessageSize

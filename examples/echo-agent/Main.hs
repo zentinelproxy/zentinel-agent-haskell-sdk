@@ -4,7 +4,7 @@
 -- Copyright   : (c) Raskell, 2026
 -- License     : Apache-2.0
 --
--- A minimal Sentinel agent that allows all requests.
+-- A minimal Zentinel agent that allows all requests.
 -- This demonstrates the basic structure of an agent.
 --
 -- = Usage
@@ -15,7 +15,7 @@
 module Main where
 
 import Data.Text qualified as T
-import Sentinel.Agent.Protocol
+import Zentinel.Agent.Protocol
 import System.Environment (getArgs)
 
 -- | Simple echo agent that allows all requests

@@ -1,12 +1,12 @@
 -- |
--- Module      : Sentinel.Agent.Health
--- Description : Health reporting utilities for Sentinel agents
+-- Module      : Zentinel.Agent.Health
+-- Description : Health reporting utilities for Zentinel agents
 -- Copyright   : (c) Raskell, 2026
 -- License     : Apache-2.0
 -- Maintainer  : agents@raskell.io
 -- Stability   : experimental
 --
--- This module provides utilities for health reporting in Sentinel agents.
+-- This module provides utilities for health reporting in Zentinel agents.
 -- Agents report their health status periodically to allow the proxy to
 -- make informed routing decisions.
 --
@@ -28,7 +28,7 @@
 --       then pure $ degradedStatus "agent-001" ["rate_limiting"] 2.0 timestamp
 --       else pure $ healthyStatus "agent-001" timestamp
 -- @
-module Sentinel.Agent.Health
+module Zentinel.Agent.Health
   ( -- * Health Status Builders
     healthyStatus
   , degradedStatus
@@ -49,7 +49,7 @@ module Sentinel.Agent.Health
 import Data.Text (Text)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Word (Word32, Word64)
-import Sentinel.Agent.Types
+import Zentinel.Agent.Types
 import UnliftIO (MonadIO, liftIO)
 
 -- | Create a healthy status

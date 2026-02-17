@@ -1,12 +1,12 @@
 -- |
--- Module      : Sentinel.Agent.Server
--- Description : Server runner for Sentinel agents
+-- Module      : Zentinel.Agent.Server
+-- Description : Server runner for Zentinel agents
 -- Copyright   : (c) Raskell, 2026
 -- License     : Apache-2.0
 -- Maintainer  : agents@raskell.io
 -- Stability   : experimental
 --
--- This module provides the main server runner for Sentinel agents.
+-- This module provides the main server runner for Zentinel agents.
 -- It handles starting the appropriate transports (UDS and/or gRPC)
 -- and managing the agent lifecycle.
 --
@@ -39,7 +39,7 @@
 --       }
 -- runAgent config handler
 -- @
-module Sentinel.Agent.Server
+module Zentinel.Agent.Server
   ( -- * Configuration
     ServerConfig (..)
   , defaultConfig
@@ -60,11 +60,11 @@ import Control.Exception (SomeException, bracket, catch, finally)
 import Control.Monad (when)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Sentinel.Agent.Handler
-import Sentinel.Agent.Internal.Logging
-import Sentinel.Agent.Transport.GRPC (GrpcServerConfig (..), HostPort (..), runGrpcServer)
-import Sentinel.Agent.Transport.UDS (UdsServerConfig (..), runUdsServer)
-import Sentinel.Agent.Types
+import Zentinel.Agent.Handler
+import Zentinel.Agent.Internal.Logging
+import Zentinel.Agent.Transport.GRPC (GrpcServerConfig (..), HostPort (..), runGrpcServer)
+import Zentinel.Agent.Transport.UDS (UdsServerConfig (..), runUdsServer)
+import Zentinel.Agent.Types
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr)
 import UnliftIO (MonadUnliftIO, liftIO)
@@ -90,11 +90,11 @@ data ServerConfig = ServerConfig
 
 -- | Default server configuration
 --
--- Uses UDS transport at @/tmp/sentinel-agent.sock@
+-- Uses UDS transport at @/tmp/zentinel-agent.sock@
 defaultConfig :: ServerConfig
 defaultConfig =
   ServerConfig
-    { scSocketPath = Just "/tmp/sentinel-agent.sock"
+    { scSocketPath = Just "/tmp/zentinel-agent.sock"
     , scGrpcAddress = Nothing
     , scLogLevel = Info
     }
@@ -230,7 +230,7 @@ startServers config runM logger = do
 toLogAction :: LogLevel -> LogAction IO LogMessage
 toLogAction level = stderrLogger (toInternalLevel level)
   where
-    toInternalLevel Debug = Sentinel.Agent.Internal.Logging.Debug
-    toInternalLevel Info = Sentinel.Agent.Internal.Logging.Info
-    toInternalLevel Warn = Sentinel.Agent.Internal.Logging.Warn
-    toInternalLevel Error = Sentinel.Agent.Internal.Logging.Error
+    toInternalLevel Debug = Zentinel.Agent.Internal.Logging.Debug
+    toInternalLevel Info = Zentinel.Agent.Internal.Logging.Info
+    toInternalLevel Warn = Zentinel.Agent.Internal.Logging.Warn
+    toInternalLevel Error = Zentinel.Agent.Internal.Logging.Error

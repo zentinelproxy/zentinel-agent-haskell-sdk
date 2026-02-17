@@ -1,5 +1,5 @@
 -- |
--- Module      : Sentinel.Agent.Internal.Framing
+-- Module      : Zentinel.Agent.Internal.Framing
 -- Description : Message framing for UDS transport
 -- Copyright   : (c) Raskell, 2026
 -- License     : Apache-2.0
@@ -18,7 +18,7 @@
 -- | big-endian u32   | (length bytes)   |
 -- +----------------+------------------+
 -- @
-module Sentinel.Agent.Internal.Framing
+module Zentinel.Agent.Internal.Framing
   ( -- * Framing
     frameMessage
   , unframeMessage
@@ -41,7 +41,7 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.Word (Word32, Word8)
 import Network.Socket (Socket)
 import Network.Socket.ByteString qualified as SBS
-import Sentinel.Agent.Types (maxUdsMessageSize)
+import Zentinel.Agent.Types (maxUdsMessageSize)
 import UnliftIO (MonadIO, liftIO, throwIO)
 
 -- | Maximum frame size (16MB, matches Rust implementation)

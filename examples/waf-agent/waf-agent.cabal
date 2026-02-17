@@ -1,9 +1,9 @@
 cabal-version:   3.0
 name:            waf-agent
 version:         0.1.0.0
-synopsis:        WAF-style agent example for Sentinel
+synopsis:        WAF-style agent example for Zentinel
 description:
-  A more complete Sentinel agent example demonstrating stateful
+  A more complete Zentinel agent example demonstrating stateful
   request handling, blocking rules, metrics collection, and
   health reporting.
 
@@ -22,7 +22,7 @@ executable waf-agent
 
   build-depends:
     , base                     >= 4.19 && < 5
-    , sentinel-agent-protocol
+    , zentinel-agent-protocol
     , text                     >= 2.1
     , mtl                      >= 2.3
     , unordered-containers     >= 0.2.20

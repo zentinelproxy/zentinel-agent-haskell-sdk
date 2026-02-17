@@ -28,5 +28,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - JSON serialization via `aeson` for wire protocol compatibility
 - Strict fields by default for predictable memory usage
 
-[Unreleased]: https://github.com/raskell-io/sentinel-agent-haskell/compare/v0.1.0.0...HEAD
-[0.1.0.0]: https://github.com/raskell-io/sentinel-agent-haskell/releases/tag/v0.1.0.0
+[Unreleased]: https://github.com/zentinelproxy/zentinel-agent-haskell/compare/v0.1.0.0...HEAD
+[0.1.0.0]: https://github.com/zentinelproxy/zentinel-agent-haskell/releases/tag/v0.1.0.0

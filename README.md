@@ -1,13 +1,13 @@
-# sentinel-agent-haskell
+# zentinel-agent-haskell
 
-Haskell SDK for the [Sentinel Agent Protocol v2](https://sentinel.raskell.io/docs/agents/v2/).
+Haskell SDK for the [Zentinel Agent Protocol v2](https://zentinelproxy.io/docs/agents/v2/).
 
-[![Hackage](https://img.shields.io/hackage/v/sentinel-agent-protocol.svg)](https://hackage.haskell.org/package/sentinel-agent-protocol)
+[![Hackage](https://img.shields.io/hackage/v/zentinel-agent-protocol.svg)](https://hackage.haskell.org/package/zentinel-agent-protocol)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 ## Overview
 
-This SDK enables writing Sentinel agents in Haskell with full protocol v2 support. Agents are external processes that extend Sentinel's functionality by inspecting and modifying HTTP requests/responses.
+This SDK enables writing Zentinel agents in Haskell with full protocol v2 support. Agents are external processes that extend Zentinel's functionality by inspecting and modifying HTTP requests/responses.
 
 ### Features
 
@@ -26,14 +26,14 @@ Add to your `cabal` file:
 
 ```cabal
 build-depends:
-    sentinel-agent-protocol >= 0.1
+    zentinel-agent-protocol >= 0.1
 ```
 
 Or with Stack:
 
 ```yaml
 extra-deps:
-  - sentinel-agent-protocol-0.1.0.0
+  - zentinel-agent-protocol-0.1.0.0
 ```
 
 ### Minimal Agent
@@ -41,7 +41,7 @@ extra-deps:
 ```haskell
 module Main where
 
-import Sentinel.Agent.Protocol
+import Zentinel.Agent.Protocol
 
 -- Simple agent that allows all requests
 instance AgentHandler IO where
@@ -59,7 +59,7 @@ For agents that need to maintain state, use the `ReaderT` pattern:
 ```haskell
 module Main where
 
-import Sentinel.Agent.Protocol
+import Zentinel.Agent.Protocol
 import Control.Monad.Reader (ReaderT, ask, runReaderT)
 import Data.IORef
 import Data.Text qualified as T
@@ -116,7 +116,7 @@ main = do
 │  └─────────────────────────────────────────────────────────┘│
 │                            │                                 │
 │  ┌─────────────────────────┴───────────────────────────────┐│
-│  │              Sentinel Agent Protocol SDK                 ││
+│  │              Zentinel Agent Protocol SDK                 ││
 │  │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐  ││
 │  │  │    Types      │ │    Server     │ │   Transport   │  ││
 │  │  │   Handler     │ │    Health     │ │   UDS/gRPC    │  ││
@@ -128,7 +128,7 @@ main = do
                                │
                                ▼
                     ┌─────────────────────┐
-                    │   Sentinel Proxy    │
+                    │   Zentinel Proxy    │
                     └─────────────────────┘
 ```
 
@@ -185,7 +185,7 @@ data ServerConfig = ServerConfig
   , scLogLevel    :: LogLevel          -- Minimum log level
   }
 
--- Default: UDS on /tmp/sentinel-agent.sock
+-- Default: UDS on /tmp/zentinel-agent.sock
 defaultConfig :: ServerConfig
 
 -- Custom configuration
@@ -290,7 +290,7 @@ See the `examples/` directory:
 ## Requirements
 
 - GHC 9.8+ (GHC2021 language standard)
-- Sentinel proxy with agent support enabled
+- Zentinel proxy with agent support enabled
 
 ## Testing
 
@@ -312,4 +312,4 @@ Apache-2.0
 
 ## Contributing
 
-Contributions welcome! Please see the [Sentinel contributing guide](https://sentinel.raskell.io/docs/contributing).
+Contributions welcome! Please see the [Zentinel contributing guide](https://zentinelproxy.io/docs/contributing).

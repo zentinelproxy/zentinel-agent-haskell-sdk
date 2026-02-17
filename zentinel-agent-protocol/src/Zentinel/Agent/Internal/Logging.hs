@@ -1,5 +1,5 @@
 -- |
--- Module      : Sentinel.Agent.Internal.Logging
+-- Module      : Zentinel.Agent.Internal.Logging
 -- Description : Internal logging utilities
 -- Copyright   : (c) Raskell, 2026
 -- License     : Apache-2.0
@@ -8,7 +8,7 @@
 --
 -- Simple logging utilities for the agent SDK.
 -- Uses co-log-core for structured logging with minimal overhead.
-module Sentinel.Agent.Internal.Logging
+module Zentinel.Agent.Internal.Logging
   ( -- * Log Actions
     LogAction (..)
   , LogMessage (..)

@@ -1,12 +1,12 @@
 -- |
--- Module      : Test.Sentinel.Agent.Framing
+-- Module      : Test.Zentinel.Agent.Framing
 -- Description : Tests for message framing
-module Test.Sentinel.Agent.Framing (spec) where
+module Test.Zentinel.Agent.Framing (spec) where
 
 import Data.Aeson (Value (..))
 import Data.ByteString qualified as BS
-import Sentinel.Agent.Internal.Framing
-import Sentinel.Agent.Types
+import Zentinel.Agent.Internal.Framing
+import Zentinel.Agent.Types
 import Test.Hspec
 
 spec :: Spec

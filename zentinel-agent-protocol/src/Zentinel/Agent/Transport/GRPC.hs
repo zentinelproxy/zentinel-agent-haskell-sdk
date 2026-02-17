@@ -1,14 +1,14 @@
 -- |
--- Module      : Sentinel.Agent.Transport.GRPC
--- Description : gRPC transport for Sentinel agents
+-- Module      : Zentinel.Agent.Transport.GRPC
+-- Description : gRPC transport for Zentinel agents
 -- Copyright   : (c) Raskell, 2026
 -- License     : Apache-2.0
 -- Maintainer  : agents@raskell.io
 -- Stability   : experimental
 --
--- This module implements the gRPC transport for Sentinel agents.
+-- This module implements the gRPC transport for Zentinel agents.
 -- It provides a bidirectional streaming interface for communication
--- with the Sentinel proxy.
+-- with the Zentinel proxy.
 --
 -- = Protocol
 --
@@ -28,7 +28,7 @@
 -- This module requires the @grpc-haskell@ package and protobuf definitions.
 -- For production use, you should generate types from the .proto files
 -- using @proto3-suite@.
-module Sentinel.Agent.Transport.GRPC
+module Zentinel.Agent.Transport.GRPC
   ( -- * Server
     GrpcServerConfig (..)
   , defaultGrpcConfig
@@ -54,9 +54,9 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Word (Word16, Word64)
-import Sentinel.Agent.Handler
-import Sentinel.Agent.Internal.Logging
-import Sentinel.Agent.Types
+import Zentinel.Agent.Handler
+import Zentinel.Agent.Internal.Logging
+import Zentinel.Agent.Types
 import UnliftIO (MonadUnliftIO, liftIO)
 
 -- | Host and port for gRPC server
@@ -165,7 +165,7 @@ deserializeMessage = eitherDecodeStrict
 --
 -- 2. Generate Haskell types:
 --
--- $ compile-proto-file --proto sentinel_agent.proto --out src
+-- $ compile-proto-file --proto zentinel_agent.proto --out src
 --
 -- 3. Implement the service handler:
 --

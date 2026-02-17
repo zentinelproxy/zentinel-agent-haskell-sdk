@@ -1,7 +1,7 @@
 {-# LANGUAGE DefaultSignatures #-}
 
 -- |
--- Module      : Sentinel.Agent.Handler
+-- Module      : Zentinel.Agent.Handler
 -- Description : AgentHandler typeclass for implementing agent logic
 -- Copyright   : (c) Raskell, 2026
 -- License     : Apache-2.0
@@ -9,7 +9,7 @@
 -- Stability   : experimental
 --
 -- This module defines the 'AgentHandler' typeclass that users implement to
--- create Sentinel agents. The typeclass uses 'MonadUnliftIO' to support safe
+-- create Zentinel agents. The typeclass uses 'MonadUnliftIO' to support safe
 -- async operations like timeouts and concurrent processing.
 --
 -- = Quick Start
@@ -38,7 +38,7 @@
 --     count <- liftIO $ atomicModifyIORef' agent.counter (\\n -> (n + 1, n + 1))
 --     pure allow
 -- @
-module Sentinel.Agent.Handler
+module Zentinel.Agent.Handler
   ( -- * Agent Handler Typeclass
     AgentHandler (..)
 
@@ -54,7 +54,7 @@ import Control.Monad.Reader (ReaderT)
 import Data.Aeson (Value)
 import Data.Text (Text)
 import Data.Word (Word64)
-import Sentinel.Agent.Types
+import Zentinel.Agent.Types
 import UnliftIO (MonadUnliftIO)
 
 -- | Type alias for agents using ReaderT pattern

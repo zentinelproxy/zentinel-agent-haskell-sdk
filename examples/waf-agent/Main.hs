@@ -24,7 +24,7 @@ import Data.IORef
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Word (Word32, Word64)
-import Sentinel.Agent.Protocol
+import Zentinel.Agent.Protocol
 import System.Environment (getArgs)
 
 -- | WAF agent state

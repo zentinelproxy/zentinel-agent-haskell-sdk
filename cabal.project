@@ -1,5 +1,5 @@
 packages:
-  sentinel-agent-protocol/
+  zentinel-agent-protocol/
   examples/echo-agent/
   examples/waf-agent/
 

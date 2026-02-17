@@ -1,21 +1,21 @@
 -- |
--- Module      : Sentinel.Agent.Protocol
--- Description : Sentinel Agent Protocol v2 SDK for Haskell
+-- Module      : Zentinel.Agent.Protocol
+-- Description : Zentinel Agent Protocol v2 SDK for Haskell
 -- Copyright   : (c) Raskell, 2026
 -- License     : Apache-2.0
 -- Maintainer  : agents@raskell.io
 -- Stability   : experimental
 --
--- This is the main module for the Sentinel Agent Protocol v2 SDK.
+-- This is the main module for the Zentinel Agent Protocol v2 SDK.
 -- It re-exports all the types and functions needed to implement
--- Sentinel agents in Haskell.
+-- Zentinel agents in Haskell.
 --
 -- = Quick Start
 --
 -- @
 -- module Main where
 --
--- import Sentinel.Agent.Protocol
+-- import Zentinel.Agent.Protocol
 --
 -- -- Simple agent that allows all requests
 -- instance AgentHandler IO where
@@ -33,7 +33,7 @@
 -- @
 -- module Main where
 --
--- import Sentinel.Agent.Protocol
+-- import Zentinel.Agent.Protocol
 -- import Control.Monad.Reader (ReaderT, ask, runReaderT)
 -- import Data.IORef
 -- import UnliftIO (atomicModifyIORef')
@@ -75,14 +75,14 @@
 --
 -- The SDK is organized into several modules:
 --
--- * "Sentinel.Agent.Types" - All protocol types (events, decisions, etc.)
--- * "Sentinel.Agent.Handler" - The 'AgentHandler' typeclass
--- * "Sentinel.Agent.Server" - Server runner and configuration
--- * "Sentinel.Agent.Health" - Health reporting utilities
--- * "Sentinel.Agent.Metrics" - Metrics collection utilities
--- * "Sentinel.Agent.Transport.UDS" - Unix socket transport
--- * "Sentinel.Agent.Transport.GRPC" - gRPC transport (placeholder)
-module Sentinel.Agent.Protocol
+-- * "Zentinel.Agent.Types" - All protocol types (events, decisions, etc.)
+-- * "Zentinel.Agent.Handler" - The 'AgentHandler' typeclass
+-- * "Zentinel.Agent.Server" - Server runner and configuration
+-- * "Zentinel.Agent.Health" - Health reporting utilities
+-- * "Zentinel.Agent.Metrics" - Metrics collection utilities
+-- * "Zentinel.Agent.Transport.UDS" - Unix socket transport
+-- * "Zentinel.Agent.Transport.GRPC" - gRPC transport (placeholder)
+module Zentinel.Agent.Protocol
   ( -- * Running Agents
     runAgent
   , runAgentWith
@@ -235,9 +235,9 @@ module Sentinel.Agent.Protocol
   , module UnliftIO
   ) where
 
-import Sentinel.Agent.Handler
-import Sentinel.Agent.Health
-import Sentinel.Agent.Metrics
-import Sentinel.Agent.Server
-import Sentinel.Agent.Types
+import Zentinel.Agent.Handler
+import Zentinel.Agent.Health
+import Zentinel.Agent.Metrics
+import Zentinel.Agent.Server
+import Zentinel.Agent.Types
 import UnliftIO (MonadIO, MonadUnliftIO, atomicModifyIORef', liftIO, newIORef, readIORef)

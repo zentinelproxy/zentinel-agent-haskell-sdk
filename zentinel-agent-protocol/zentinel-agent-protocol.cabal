@@ -1,10 +1,10 @@
 cabal-version:   3.0
-name:            sentinel-agent-protocol
+name:            zentinel-agent-protocol
 version:         0.1.0.0
-synopsis:        Haskell SDK for Sentinel Agent Protocol v2
+synopsis:        Haskell SDK for Zentinel Agent Protocol v2
 description:
-  A Haskell SDK for implementing Sentinel agents that communicate with
-  the Sentinel reverse proxy using protocol v2. Supports both Unix Domain
+  A Haskell SDK for implementing Zentinel agents that communicate with
+  the Zentinel reverse proxy using protocol v2. Supports both Unix Domain
   Socket (UDS) and gRPC transports.
   .
   See the README for usage examples and the full protocol specification.
@@ -21,7 +21,7 @@ extra-doc-files: CHANGELOG.md
 
 source-repository head
   type:     git
-  location: https://github.com/raskell-io/sentinel-agent-haskell
+  location: https://github.com/zentinelproxy/zentinel-agent-haskell
 
 common warnings
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates
@@ -34,18 +34,18 @@ library
   hs-source-dirs:   src
 
   exposed-modules:
-    Sentinel.Agent.Protocol
-    Sentinel.Agent.Types
-    Sentinel.Agent.Handler
-    Sentinel.Agent.Server
-    Sentinel.Agent.Health
-    Sentinel.Agent.Metrics
-    Sentinel.Agent.Transport.UDS
-    Sentinel.Agent.Transport.GRPC
+    Zentinel.Agent.Protocol
+    Zentinel.Agent.Types
+    Zentinel.Agent.Handler
+    Zentinel.Agent.Server
+    Zentinel.Agent.Health
+    Zentinel.Agent.Metrics
+    Zentinel.Agent.Transport.UDS
+    Zentinel.Agent.Transport.GRPC
 
   other-modules:
-    Sentinel.Agent.Internal.Framing
-    Sentinel.Agent.Internal.Logging
+    Zentinel.Agent.Internal.Framing
+    Zentinel.Agent.Internal.Logging
 
   build-depends:
     , base                  >= 4.19 && < 5
@@ -86,7 +86,7 @@ library
     StrictData
     TypeFamilies
 
-test-suite sentinel-agent-protocol-test
+test-suite zentinel-agent-protocol-test
   import:           warnings
   default-language: GHC2021
   type:             exitcode-stdio-1.0
@@ -94,12 +94,12 @@ test-suite sentinel-agent-protocol-test
   main-is:          Main.hs
 
   other-modules:
-    Test.Sentinel.Agent.Types
-    Test.Sentinel.Agent.Framing
+    Test.Zentinel.Agent.Types
+    Test.Zentinel.Agent.Framing
 
   build-depends:
     , base
-    , sentinel-agent-protocol
+    , zentinel-agent-protocol
     , aeson
     , bytestring
     , text

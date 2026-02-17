@@ -1,13 +1,13 @@
 -- |
--- Module      : Sentinel.Agent.Transport.UDS
--- Description : Unix Domain Socket transport for Sentinel agents
+-- Module      : Zentinel.Agent.Transport.UDS
+-- Description : Unix Domain Socket transport for Zentinel agents
 -- Copyright   : (c) Raskell, 2026
 -- License     : Apache-2.0
 -- Maintainer  : agents@raskell.io
 -- Stability   : experimental
 --
 -- This module implements the UDS (Unix Domain Socket) transport for
--- Sentinel agents. It handles connection management, message framing,
+-- Zentinel agents. It handles connection management, message framing,
 -- and the handshake protocol.
 --
 -- = Wire Protocol
@@ -26,7 +26,7 @@
 -- @
 -- runUdsServer config handler
 -- @
-module Sentinel.Agent.Transport.UDS
+module Zentinel.Agent.Transport.UDS
   ( -- * Server
     UdsServerConfig (..)
   , defaultUdsConfig
@@ -50,10 +50,10 @@ import Data.Text qualified as T
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Word (Word64)
 import Network.Socket hiding (recv, send)
-import Sentinel.Agent.Handler
-import Sentinel.Agent.Internal.Framing
-import Sentinel.Agent.Internal.Logging
-import Sentinel.Agent.Types
+import Zentinel.Agent.Handler
+import Zentinel.Agent.Internal.Framing
+import Zentinel.Agent.Internal.Logging
+import Zentinel.Agent.Types
 import System.Directory (removeFile)
 import System.Posix.Files (setFileMode)
 import UnliftIO (MonadUnliftIO, liftIO, withRunInIO)
@@ -76,7 +76,7 @@ data UdsServerConfig = UdsServerConfig
 defaultUdsConfig :: UdsServerConfig
 defaultUdsConfig =
   UdsServerConfig
-    { udsSocketPath = "/tmp/sentinel-agent.sock"
+    { udsSocketPath = "/tmp/zentinel-agent.sock"
     , udsSocketMode = 0o660
     , udsMaxConnections = 100
     , udsBacklog = 128

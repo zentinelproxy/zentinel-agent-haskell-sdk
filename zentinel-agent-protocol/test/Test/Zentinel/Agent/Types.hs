@@ -1,11 +1,11 @@
 -- |
--- Module      : Test.Sentinel.Agent.Types
+-- Module      : Test.Zentinel.Agent.Types
 -- Description : Tests for protocol types JSON serialization
-module Test.Sentinel.Agent.Types (spec) where
+module Test.Zentinel.Agent.Types (spec) where
 
 import Data.Aeson (decode, encode)
 import Data.HashMap.Strict qualified as HM
-import Sentinel.Agent.Types
+import Zentinel.Agent.Types
 import Test.Hspec
 
 spec :: Spec
