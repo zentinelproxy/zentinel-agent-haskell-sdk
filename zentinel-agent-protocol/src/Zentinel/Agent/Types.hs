@@ -140,7 +140,7 @@ import GHC.Generics (Generic)
 protocolVersion :: Word32
 protocolVersion = 2
 
--- | Maximum message size for v1 protocol (10MB)
+-- | Maximum message size for JSON protocol (10MB)
 maxMessageSize :: Int
 maxMessageSize = 10 * 1024 * 1024
 
