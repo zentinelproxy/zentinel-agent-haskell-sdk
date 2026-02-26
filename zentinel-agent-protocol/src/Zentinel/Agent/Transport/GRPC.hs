@@ -13,13 +13,13 @@
 -- = Protocol
 --
 -- The gRPC transport uses bidirectional streaming over TCP with
--- length-prefixed JSON framing:
+-- length-prefixed framing (v1 JSON encoding):
 --
 -- * Proxy streams 'ProxyMessage' to the agent
 -- * Agent streams 'AgentMessage' back
 --
 -- Messages are framed identically to the UDS transport: a 4-byte
--- big-endian length prefix followed by the JSON payload.
+-- big-endian length prefix followed by the payload (v1 JSON encoding).
 --
 -- = Connection Lifecycle
 --
@@ -37,9 +37,9 @@
 --
 -- = Note
 --
--- This module uses JSON-over-TCP with length-prefixed framing as the wire
--- format. This provides wire compatibility with the protocol while keeping
--- the implementation straightforward. For production deployments requiring
+-- This module uses JSON-over-TCP with length-prefixed framing (v1 JSON
+-- encoding) as the wire format. This provides wire compatibility with the
+-- protocol while keeping the implementation straightforward. For production deployments requiring
 -- native gRPC\/HTTP2 framing, generate Haskell types from the .proto files
 -- using @proto3-suite@ and adapt the handlers accordingly.
 module Zentinel.Agent.Transport.GRPC
@@ -412,10 +412,10 @@ handleMessage runM = \case
     pure Nothing
 
 --------------------------------------------------------------------------------
--- Wire format: length-prefixed JSON framing
+-- Wire format: length-prefixed framing (v1 JSON encoding)
 --------------------------------------------------------------------------------
 
--- | Read a length-prefixed JSON message from a gRPC socket
+-- | Read a length-prefixed message from a gRPC socket (v1 JSON encoding)
 --
 -- Wire format: 4-byte big-endian length prefix followed by JSON payload.
 -- Validates the message size against 'grpcMaxMessageSize'.
@@ -443,7 +443,7 @@ readGrpcMessage config sock = do
                     Left err -> pure $ Left (GrpcParseError err)
                     Right val -> pure (Right val)
 
--- | Write a length-prefixed JSON message to a gRPC socket
+-- | Write a length-prefixed message to a gRPC socket (v1 JSON encoding)
 --
 -- Encodes the message as JSON, prepends a 4-byte big-endian length
 -- header, and sends the complete frame.
