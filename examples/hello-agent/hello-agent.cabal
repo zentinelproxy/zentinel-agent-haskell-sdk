@@ -1,0 +1,16 @@
+cabal-version:   3.0
+name:            hello-agent
+version:         0.2.0.0
+synopsis:        The README quick-start agent: adds X-Hello and allows
+license:         Apache-2.0
+build-type:      Simple
+
+executable hello-agent
+  main-is:          Main.hs
+  default-language: GHC2021
+  build-depends:
+    , base >= 4.19 && < 5
+    , zentinel-agent-protocol
+  ghc-options:      -Wall -Wno-orphans -threaded -rtsopts -with-rtsopts=-N
+  default-extensions:
+    OverloadedStrings

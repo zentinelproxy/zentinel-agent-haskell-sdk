@@ -25,7 +25,6 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Word (Word32, Word64)
 import Zentinel.Agent.Protocol
-import System.Environment (getArgs)
 
 -- | WAF agent state
 data WafAgent = WafAgent
@@ -74,7 +73,6 @@ instance AgentHandler (ReaderT WafAgent IO) where
     liftIO $ atomicModifyIORef' (inFlightCount agent) (\n -> (n + 1, ()))
 
     let uri = reqHdrUri event
-        method = reqHdrMethod event
 
     -- Check for blocked patterns
     if isBlocked uri
@@ -202,31 +200,7 @@ withAudit resp audit = resp {respAudit = audit}
 
 main :: IO ()
 main = do
-  args <- getArgs
-  let config = parseArgs args defaultConfig
+  config <- configFromArgs defaultConfig
   agent <- newWafAgent
   putStrLn $ "Starting WAF agent on " <> show (scSocketPath config)
   runAgent config (`runReaderT` agent)
-
--- | Parse command line arguments
-parseArgs :: [String] -> ServerConfig -> ServerConfig
-parseArgs [] cfg = cfg
-parseArgs ("--socket" : path : rest) cfg =
-  parseArgs rest cfg {scSocketPath = Just path}
-parseArgs ("--grpc" : hostPort : rest) cfg =
-  case parseHostPort hostPort of
-    Just hp -> parseArgs rest cfg {scGrpcAddress = Just hp}
-    Nothing -> parseArgs rest cfg
-parseArgs ("--debug" : rest) cfg =
-  parseArgs rest cfg {scLogLevel = Debug}
-parseArgs (_ : rest) cfg = parseArgs rest cfg
-
--- | Parse host:port string
-parseHostPort :: String -> Maybe HostPort
-parseHostPort s =
-  case break (== ':') s of
-    (host, ':' : portStr) ->
-      case reads portStr of
-        [(port, "")] -> Just (HostPort (T.pack host) port)
-        _ -> Nothing
-    _ -> Nothing

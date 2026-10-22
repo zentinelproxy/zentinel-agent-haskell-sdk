@@ -23,7 +23,7 @@
 --   onRequestHeaders _ = pure allow
 --
 -- main :: IO ()
--- main = runAgent defaultConfig id
+-- main = configFromArgs defaultConfig >>= \\cfg -> runAgent cfg id
 -- @
 --
 -- = Agent with State
@@ -68,7 +68,8 @@
 -- main :: IO ()
 -- main = do
 --   agent <- WafAgent <$> newIORef 0 <*> newIORef 0
---   runAgent defaultConfig (flip runReaderT agent)
+--   cfg <- configFromArgs defaultConfig
+--   runAgent cfg (flip runReaderT agent)
 -- @
 --
 -- = Architecture
@@ -88,6 +89,10 @@ module Zentinel.Agent.Protocol
   , runAgentWith
   , ServerConfig (..)
   , defaultConfig
+  , configFromArgs
+  , parseArgs
+  , parseHostPort
+  , grpcAvailable
   , LogLevel (..)
   , HostPort (..)
 
@@ -227,9 +232,9 @@ module Zentinel.Agent.Protocol
   , FlowAction (..)
   , StreamState (..)
 
-    -- * Message Envelopes
-  , AgentMessage (..)
-  , ProxyMessage (..)
+    -- * Header helpers
+  , setRequestHeader
+  , setResponseHeader
 
     -- * Re-exports
   , module UnliftIO
@@ -239,5 +244,5 @@ import Zentinel.Agent.Handler
 import Zentinel.Agent.Health
 import Zentinel.Agent.Metrics
 import Zentinel.Agent.Server
-import Zentinel.Agent.Types
-import UnliftIO (MonadIO, MonadUnliftIO, atomicModifyIORef', liftIO, newIORef, readIORef)
+import Zentinel.Agent.Types hiding (LogLevel (..))
+import UnliftIO (MonadIO, MonadUnliftIO, liftIO)

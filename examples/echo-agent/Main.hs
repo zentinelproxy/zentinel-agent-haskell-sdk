@@ -16,7 +16,6 @@ module Main where
 
 import Data.Text qualified as T
 import Zentinel.Agent.Protocol
-import System.Environment (getArgs)
 
 -- | Simple echo agent that allows all requests
 --
@@ -48,30 +47,6 @@ instance AgentHandler IO where
 
 main :: IO ()
 main = do
-  args <- getArgs
-  let config = parseArgs args defaultConfig
+  config <- configFromArgs defaultConfig
   putStrLn $ "Starting echo agent on " <> show (scSocketPath config)
   runAgent config id
-
--- | Parse command line arguments
-parseArgs :: [String] -> ServerConfig -> ServerConfig
-parseArgs [] cfg = cfg
-parseArgs ("--socket" : path : rest) cfg =
-  parseArgs rest cfg {scSocketPath = Just path}
-parseArgs ("--grpc" : hostPort : rest) cfg =
-  case parseHostPort hostPort of
-    Just hp -> parseArgs rest cfg {scGrpcAddress = Just hp}
-    Nothing -> parseArgs rest cfg
-parseArgs ("--debug" : rest) cfg =
-  parseArgs rest cfg {scLogLevel = Debug}
-parseArgs (_ : rest) cfg = parseArgs rest cfg
-
--- | Parse host:port string
-parseHostPort :: String -> Maybe HostPort
-parseHostPort s =
-  case break (== ':') s of
-    (host, ':' : portStr) ->
-      case reads portStr of
-        [(port, "")] -> Just (HostPort (T.pack host) port)
-        _ -> Nothing
-    _ -> Nothing
