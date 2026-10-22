@@ -31,9 +31,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install snappy (needed by grapesy for the gRPC transport)
+      - name: Install snappy and protoc (needed by grapesy and proto-lens for the gRPC transport)
         if: matrix.grpc
-        run: sudo apt-get update && sudo apt-get install -y libsnappy-dev
+        run: sudo apt-get update && sudo apt-get install -y libsnappy-dev protobuf-compiler
 
       - name: Install GHC and cabal
         id: setup
@@ -71,8 +71,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install snappy
-        run: sudo apt-get update && sudo apt-get install -y libsnappy-dev
+      - name: Install snappy and protoc
+        run: sudo apt-get update && sudo apt-get install -y libsnappy-dev protobuf-compiler
 
       - name: Install GHC and cabal
         id: setup
