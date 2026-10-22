@@ -102,15 +102,13 @@ module Zentinel.Agent.Types
   , FlowAction (..)
   , StreamState (..)
 
-    -- * Envelope Types
-  , AgentMessage (..)
-  , ProxyMessage (..)
-
     -- * Helper Functions
   , allow
   , block
   , redirect
   , challenge
+  , setRequestHeader
+  , setResponseHeader
   , healthy
   , degraded
   , draining
@@ -219,45 +217,48 @@ data Decision
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFData)
 
+-- | Externally tagged, as serde serializes @Decision@ in the proxy:
+-- @"allow"@, @{"block": {...}}@, @{"redirect": {...}}@, @{"challenge": {...}}@.
 instance ToJSON Decision where
-  toJSON Allow = object ["type" .= ("allow" :: Text)]
+  toJSON Allow = String "allow"
   toJSON Block {..} =
-    object $
-      ["type" .= ("block" :: Text), "status" .= blockStatus]
-        <> maybe [] (\b -> ["body" .= b]) blockBody
-        <> maybe [] (\h -> ["headers" .= h]) blockHeaders
-  toJSON Redirect {..} =
     object
-      [ "type" .= ("redirect" :: Text)
-      , "url" .= redirectUrl
-      , "status" .= redirectStatus
+      [ "block"
+          .= object
+            [ "status" .= blockStatus
+            , "body" .= blockBody
+            , "headers" .= blockHeaders
+            ]
       ]
+  toJSON Redirect {..} =
+    object ["redirect" .= object ["url" .= redirectUrl, "status" .= redirectStatus]]
   toJSON Challenge {..} =
     object
-      [ "type" .= ("challenge" :: Text)
-      , "challenge_type" .= challengeType
-      , "params" .= challengeParams
+      [ "challenge"
+          .= object ["challenge_type" .= challengeType, "params" .= challengeParams]
       ]
 
 instance FromJSON Decision where
-  parseJSON = withObject "Decision" $ \o -> do
-    typ <- o .: "type" :: Parser Text
-    case typ of
-      "allow" -> pure Allow
-      "block" -> do
-        blockStatus <- o .: "status"
-        blockBody <- o .:? "body"
-        blockHeaders <- o .:? "headers"
+  parseJSON (String "allow") = pure Allow
+  parseJSON v = flip (withObject "Decision") v $ \o -> do
+    mBlock <- o .:? "block"
+    mRedirect <- o .:? "redirect"
+    mChallenge <- o .:? "challenge"
+    case (mBlock, mRedirect, mChallenge) of
+      (Just b, _, _) -> do
+        blockStatus <- b .: "status"
+        blockBody <- b .:? "body"
+        blockHeaders <- b .:? "headers"
         pure Block {..}
-      "redirect" -> do
-        redirectUrl <- o .: "url"
-        redirectStatus <- o .: "status"
+      (_, Just r, _) -> do
+        redirectUrl <- r .: "url"
+        redirectStatus <- r .: "status"
         pure Redirect {..}
-      "challenge" -> do
-        challengeType <- o .: "challenge_type"
-        challengeParams <- o .:? "params" .!= HM.empty
+      (_, _, Just c) -> do
+        challengeType <- c .: "challenge_type"
+        challengeParams <- c .:? "params" .!= HM.empty
         pure Challenge {..}
-      other -> fail $ "Unknown Decision type: " <> T.unpack other
+      _ -> fail "Decision must be \"allow\" or have a block, redirect or challenge field"
 
 -- | Decision for WebSocket frames
 data WebSocketDecision
@@ -274,26 +275,19 @@ data WebSocketDecision
   deriving anyclass (NFData)
 
 instance ToJSON WebSocketDecision where
-  toJSON WsAllow = object ["type" .= ("allow" :: Text)]
-  toJSON WsDrop = object ["type" .= ("drop" :: Text)]
+  toJSON WsAllow = String "allow"
+  toJSON WsDrop = String "drop"
   toJSON WsClose {..} =
-    object
-      [ "type" .= ("close" :: Text)
-      , "code" .= wsCloseCode
-      , "reason" .= wsCloseReason
-      ]
+    object ["close" .= object ["code" .= wsCloseCode, "reason" .= wsCloseReason]]
 
 instance FromJSON WebSocketDecision where
-  parseJSON = withObject "WebSocketDecision" $ \o -> do
-    typ <- o .: "type" :: Parser Text
-    case typ of
-      "allow" -> pure WsAllow
-      "drop" -> pure WsDrop
-      "close" -> do
-        wsCloseCode <- o .: "code"
-        wsCloseReason <- o .: "reason"
-        pure WsClose {..}
-      other -> fail $ "Unknown WebSocketDecision type: " <> T.unpack other
+  parseJSON (String "allow") = pure WsAllow
+  parseJSON (String "drop") = pure WsDrop
+  parseJSON v = flip (withObject "WebSocketDecision") v $ \o -> do
+    c <- o .: "close"
+    wsCloseCode <- c .: "code"
+    wsCloseReason <- c .: "reason"
+    pure WsClose {..}
 
 -- | Header operation for modifying request/response headers
 data HeaderOp
@@ -650,16 +644,16 @@ instance ToJSON RequestMetadata where
 instance FromJSON RequestMetadata where
   parseJSON = withObject "RequestMetadata" $ \o -> do
     metaCorrelationId <- o .: "correlation_id"
-    metaRequestId <- o .: "request_id"
-    metaClientIp <- o .: "client_ip"
-    metaClientPort <- o .: "client_port"
+    metaRequestId <- o .:? "request_id" .!= ""
+    metaClientIp <- o .:? "client_ip" .!= ""
+    metaClientPort <- o .:? "client_port" .!= 0
     metaServerName <- o .:? "server_name"
-    metaProtocol <- o .: "protocol"
+    metaProtocol <- o .:? "protocol" .!= ""
     metaTlsVersion <- o .:? "tls_version"
     metaTlsCipher <- o .:? "tls_cipher"
     metaRouteId <- o .:? "route_id"
     metaUpstreamId <- o .:? "upstream_id"
-    metaTimestamp <- o .: "timestamp"
+    metaTimestamp <- o .:? "timestamp" .!= ""
     metaTraceparent <- o .:? "traceparent"
     pure RequestMetadata {..}
 
@@ -691,7 +685,7 @@ instance FromJSON RequestHeadersEvent where
     reqHdrMetadata <- o .: "metadata"
     reqHdrMethod <- o .: "method"
     reqHdrUri <- o .: "uri"
-    reqHdrHeaders <- o .: "headers"
+    reqHdrHeaders <- o .:? "headers" .!= HM.empty
     pure RequestHeadersEvent {..}
 
 -- | Request body chunk event
@@ -723,8 +717,8 @@ instance FromJSON RequestBodyChunkEvent where
     reqBodyData <- o .: "data"
     reqBodyIsLast <- o .: "is_last"
     reqBodyTotalSize <- o .:? "total_size"
-    reqBodyChunkIndex <- o .: "chunk_index"
-    reqBodyBytesReceived <- o .: "bytes_received"
+    reqBodyChunkIndex <- o .:? "chunk_index" .!= 0
+    reqBodyBytesReceived <- o .:? "bytes_received" .!= 0
     pure RequestBodyChunkEvent {..}
 
 -- | Response headers event
@@ -748,7 +742,7 @@ instance FromJSON ResponseHeadersEvent where
   parseJSON = withObject "ResponseHeadersEvent" $ \o -> do
     respHdrCorrelationId <- o .: "correlation_id"
     respHdrStatus <- o .: "status"
-    respHdrHeaders <- o .: "headers"
+    respHdrHeaders <- o .:? "headers" .!= HM.empty
     pure ResponseHeadersEvent {..}
 
 -- | Response body chunk event
@@ -780,20 +774,18 @@ instance FromJSON ResponseBodyChunkEvent where
     respBodyData <- o .: "data"
     respBodyIsLast <- o .: "is_last"
     respBodyTotalSize <- o .:? "total_size"
-    respBodyChunkIndex <- o .: "chunk_index"
-    respBodyBytesSent <- o .: "bytes_sent"
+    respBodyChunkIndex <- o .:? "chunk_index" .!= 0
+    respBodyBytesSent <- o .:? "bytes_sent" .!= 0
     pure ResponseBodyChunkEvent {..}
 
 -- | Request complete event (for logging/metrics)
 data RequestCompleteEvent = RequestCompleteEvent
   { reqCompCorrelationId :: !Text
-  , reqCompRequestId :: !Text
-  , reqCompStatusCode :: !Word16
-  , reqCompRequestBytes :: !Int
-  , reqCompResponseBytes :: !Int
+  , reqCompStatus :: !Word16
   , reqCompDurationMs :: !Word64
-  , reqCompUpstreamDurationMs :: !(Maybe Word64)
-  , reqCompCached :: !Bool
+  , reqCompRequestBodySize :: !Int
+  , reqCompResponseBodySize :: !Int
+  , reqCompUpstreamAttempts :: !Word32
   , reqCompError :: !(Maybe Text)
   }
   deriving stock (Eq, Show, Generic)
@@ -801,38 +793,35 @@ data RequestCompleteEvent = RequestCompleteEvent
 
 instance ToJSON RequestCompleteEvent where
   toJSON RequestCompleteEvent {..} =
-    object $
+    object
       [ "correlation_id" .= reqCompCorrelationId
-      , "request_id" .= reqCompRequestId
-      , "status_code" .= reqCompStatusCode
-      , "request_bytes" .= reqCompRequestBytes
-      , "response_bytes" .= reqCompResponseBytes
+      , "status" .= reqCompStatus
       , "duration_ms" .= reqCompDurationMs
-      , "cached" .= reqCompCached
+      , "request_body_size" .= reqCompRequestBodySize
+      , "response_body_size" .= reqCompResponseBodySize
+      , "upstream_attempts" .= reqCompUpstreamAttempts
+      , "error" .= reqCompError
       ]
-        <> maybe [] (\d -> ["upstream_duration_ms" .= d]) reqCompUpstreamDurationMs
-        <> maybe [] (\e -> ["error" .= e]) reqCompError
 
 instance FromJSON RequestCompleteEvent where
   parseJSON = withObject "RequestCompleteEvent" $ \o -> do
     reqCompCorrelationId <- o .: "correlation_id"
-    reqCompRequestId <- o .: "request_id"
-    reqCompStatusCode <- o .: "status_code"
-    reqCompRequestBytes <- o .: "request_bytes"
-    reqCompResponseBytes <- o .: "response_bytes"
-    reqCompDurationMs <- o .: "duration_ms"
-    reqCompUpstreamDurationMs <- o .:? "upstream_duration_ms"
-    reqCompCached <- o .:? "cached" .!= False
+    reqCompStatus <- o .:? "status" .!= 0
+    reqCompDurationMs <- o .:? "duration_ms" .!= 0
+    reqCompRequestBodySize <- o .:? "request_body_size" .!= 0
+    reqCompResponseBodySize <- o .:? "response_body_size" .!= 0
+    reqCompUpstreamAttempts <- o .:? "upstream_attempts" .!= 0
     reqCompError <- o .:? "error"
     pure RequestCompleteEvent {..}
 
--- | WebSocket frame type
+-- | WebSocket frame opcode
 data WebSocketFrameType
   = WsText
   | WsBinary
   | WsPing
   | WsPong
   | WsCloseFrame
+  | WsContinuation
   deriving stock (Eq, Show, Ord, Bounded, Enum, Generic)
   deriving anyclass (NFData)
 
@@ -843,6 +832,7 @@ instance ToJSON WebSocketFrameType where
     WsPing -> "ping"
     WsPong -> "pong"
     WsCloseFrame -> "close"
+    WsContinuation -> "continuation"
 
 instance FromJSON WebSocketFrameType where
   parseJSON = withText "WebSocketFrameType" $ \case
@@ -851,15 +841,19 @@ instance FromJSON WebSocketFrameType where
     "ping" -> pure WsPing
     "pong" -> pure WsPong
     "close" -> pure WsCloseFrame
+    "continuation" -> pure WsContinuation
     other -> fail $ "Unknown WebSocketFrameType: " <> T.unpack other
 
 -- | WebSocket frame event
 data WebSocketFrameEvent = WebSocketFrameEvent
   { wsFrameCorrelationId :: !Text
-  , wsFrameType :: !WebSocketFrameType
+  , wsFrameOpcode :: !WebSocketFrameType
   , wsFrameData :: !Text  -- Base64-encoded
-  , wsFrameFromClient :: !Bool
-  , wsFrameTimestamp :: !Text
+  , wsFrameClientToServer :: !Bool
+  , wsFrameIndex :: !Word64
+  , wsFrameFin :: !Bool
+  , wsFrameRouteId :: !(Maybe Text)
+  , wsFrameClientIp :: !Text
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFData)
@@ -868,19 +862,25 @@ instance ToJSON WebSocketFrameEvent where
   toJSON WebSocketFrameEvent {..} =
     object
       [ "correlation_id" .= wsFrameCorrelationId
-      , "frame_type" .= wsFrameType
+      , "opcode" .= wsFrameOpcode
       , "data" .= wsFrameData
-      , "from_client" .= wsFrameFromClient
-      , "timestamp" .= wsFrameTimestamp
+      , "client_to_server" .= wsFrameClientToServer
+      , "frame_index" .= wsFrameIndex
+      , "fin" .= wsFrameFin
+      , "route_id" .= wsFrameRouteId
+      , "client_ip" .= wsFrameClientIp
       ]
 
 instance FromJSON WebSocketFrameEvent where
   parseJSON = withObject "WebSocketFrameEvent" $ \o -> do
     wsFrameCorrelationId <- o .: "correlation_id"
-    wsFrameType <- o .: "frame_type"
-    wsFrameData <- o .: "data"
-    wsFrameFromClient <- o .: "from_client"
-    wsFrameTimestamp <- o .: "timestamp"
+    wsFrameOpcode <- o .: "opcode"
+    wsFrameData <- o .:? "data" .!= ""
+    wsFrameClientToServer <- o .:? "client_to_server" .!= True
+    wsFrameIndex <- o .:? "frame_index" .!= 0
+    wsFrameFin <- o .:? "fin" .!= True
+    wsFrameRouteId <- o .:? "route_id"
+    wsFrameClientIp <- o .:? "client_ip" .!= ""
     pure WebSocketFrameEvent {..}
 
 -- | Guardrail inspection type
@@ -1004,7 +1004,7 @@ instance ToJSON AgentResponse where
 
 instance FromJSON AgentResponse where
   parseJSON = withObject "AgentResponse" $ \o -> do
-    respVersion <- o .:? "version" .!= 1
+    respVersion <- o .:? "version" .!= protocolVersion
     respDecision <- o .:? "decision" .!= Allow
     respRequestHeaders <- o .:? "request_headers" .!= []
     respResponseHeaders <- o .:? "response_headers" .!= []
@@ -1836,132 +1836,6 @@ instance FromJSON StreamState where
     other -> fail $ "Unknown StreamState: " <> T.unpack other
 
 --------------------------------------------------------------------------------
--- Envelope Types
---------------------------------------------------------------------------------
-
--- | Message from agent to proxy
-data AgentMessage
-  = AgentMsgHandshakeResponse !HandshakeResponse
-  | AgentMsgResponse !AgentResponse
-  | AgentMsgGuardrailResponse !GuardrailResponse
-  | AgentMsgHealthStatus !HealthStatus
-  | AgentMsgMetricsReport !MetricsReport
-  | AgentMsgConfigResponse !ConfigUpdateResponse
-  | AgentMsgFlowControl !FlowControlSignal
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (NFData)
-
-instance ToJSON AgentMessage where
-  toJSON (AgentMsgHandshakeResponse r) =
-    object ["type" .= ("handshake_response" :: Text), "payload" .= r]
-  toJSON (AgentMsgResponse r) =
-    object ["type" .= ("response" :: Text), "payload" .= r]
-  toJSON (AgentMsgGuardrailResponse r) =
-    object ["type" .= ("guardrail_response" :: Text), "payload" .= r]
-  toJSON (AgentMsgHealthStatus s) =
-    object ["type" .= ("health_status" :: Text), "payload" .= s]
-  toJSON (AgentMsgMetricsReport r) =
-    object ["type" .= ("metrics_report" :: Text), "payload" .= r]
-  toJSON (AgentMsgConfigResponse r) =
-    object ["type" .= ("config_response" :: Text), "payload" .= r]
-  toJSON (AgentMsgFlowControl s) =
-    object ["type" .= ("flow_control" :: Text), "payload" .= s]
-
-instance FromJSON AgentMessage where
-  parseJSON = withObject "AgentMessage" $ \o -> do
-    typ <- o .: "type" :: Parser Text
-    payload <- o .: "payload"
-    case typ of
-      "handshake_response" -> AgentMsgHandshakeResponse <$> parseJSON payload
-      "response" -> AgentMsgResponse <$> parseJSON payload
-      "guardrail_response" -> AgentMsgGuardrailResponse <$> parseJSON payload
-      "health_status" -> AgentMsgHealthStatus <$> parseJSON payload
-      "metrics_report" -> AgentMsgMetricsReport <$> parseJSON payload
-      "config_response" -> AgentMsgConfigResponse <$> parseJSON payload
-      "flow_control" -> AgentMsgFlowControl <$> parseJSON payload
-      other -> fail $ "Unknown AgentMessage type: " <> T.unpack other
-
--- | Message from proxy to agent
-data ProxyMessage
-  = ProxyMsgHandshake !HandshakeRequest
-  | ProxyMsgRequestHeaders !RequestHeadersEvent
-  | ProxyMsgRequestBodyChunk !RequestBodyChunkEvent
-  | ProxyMsgResponseHeaders !ResponseHeadersEvent
-  | ProxyMsgResponseBodyChunk !ResponseBodyChunkEvent
-  | ProxyMsgRequestComplete !RequestCompleteEvent
-  | ProxyMsgWebSocketFrame !WebSocketFrameEvent
-  | ProxyMsgGuardrailInspect !GuardrailInspectEvent
-  | ProxyMsgCancel !CancelRequest
-  | ProxyMsgConfigUpdate !ConfigUpdateRequest
-  | ProxyMsgFlowControl !FlowControlSignal
-  | ProxyMsgShutdown !ShutdownReason !Word64
-  | ProxyMsgDrain !Word64 !DrainReason
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (NFData)
-
-instance ToJSON ProxyMessage where
-  toJSON (ProxyMsgHandshake r) =
-    object ["type" .= ("handshake" :: Text), "payload" .= r]
-  toJSON (ProxyMsgRequestHeaders e) =
-    object ["type" .= ("request_headers" :: Text), "payload" .= e]
-  toJSON (ProxyMsgRequestBodyChunk e) =
-    object ["type" .= ("request_body_chunk" :: Text), "payload" .= e]
-  toJSON (ProxyMsgResponseHeaders e) =
-    object ["type" .= ("response_headers" :: Text), "payload" .= e]
-  toJSON (ProxyMsgResponseBodyChunk e) =
-    object ["type" .= ("response_body_chunk" :: Text), "payload" .= e]
-  toJSON (ProxyMsgRequestComplete e) =
-    object ["type" .= ("request_complete" :: Text), "payload" .= e]
-  toJSON (ProxyMsgWebSocketFrame e) =
-    object ["type" .= ("websocket_frame" :: Text), "payload" .= e]
-  toJSON (ProxyMsgGuardrailInspect e) =
-    object ["type" .= ("guardrail_inspect" :: Text), "payload" .= e]
-  toJSON (ProxyMsgCancel r) =
-    object ["type" .= ("cancel" :: Text), "payload" .= r]
-  toJSON (ProxyMsgConfigUpdate r) =
-    object ["type" .= ("config_update" :: Text), "payload" .= r]
-  toJSON (ProxyMsgFlowControl s) =
-    object ["type" .= ("flow_control" :: Text), "payload" .= s]
-  toJSON (ProxyMsgShutdown reason timeout) =
-    object
-      [ "type" .= ("shutdown" :: Text)
-      , "payload" .= object ["reason" .= reason, "timeout_ms" .= timeout]
-      ]
-  toJSON (ProxyMsgDrain timeout reason) =
-    object
-      [ "type" .= ("drain" :: Text)
-      , "payload" .= object ["timeout_ms" .= timeout, "reason" .= reason]
-      ]
-
-instance FromJSON ProxyMessage where
-  parseJSON = withObject "ProxyMessage" $ \o -> do
-    typ <- o .: "type" :: Parser Text
-    payload <- o .: "payload"
-    case typ of
-      "handshake" -> ProxyMsgHandshake <$> parseJSON payload
-      "request_headers" -> ProxyMsgRequestHeaders <$> parseJSON payload
-      "request_body_chunk" -> ProxyMsgRequestBodyChunk <$> parseJSON payload
-      "response_headers" -> ProxyMsgResponseHeaders <$> parseJSON payload
-      "response_body_chunk" -> ProxyMsgResponseBodyChunk <$> parseJSON payload
-      "request_complete" -> ProxyMsgRequestComplete <$> parseJSON payload
-      "websocket_frame" -> ProxyMsgWebSocketFrame <$> parseJSON payload
-      "guardrail_inspect" -> ProxyMsgGuardrailInspect <$> parseJSON payload
-      "cancel" -> ProxyMsgCancel <$> parseJSON payload
-      "config_update" -> ProxyMsgConfigUpdate <$> parseJSON payload
-      "flow_control" -> ProxyMsgFlowControl <$> parseJSON payload
-      "shutdown" -> do
-        inner <- parseJSON payload
-        ProxyMsgShutdown
-          <$> inner .: "reason"
-          <*> inner .: "timeout_ms"
-      "drain" -> do
-        inner <- parseJSON payload
-        ProxyMsgDrain
-          <$> inner .: "timeout_ms"
-          <*> inner .: "reason"
-      other -> fail $ "Unknown ProxyMessage type: " <> T.unpack other
-
---------------------------------------------------------------------------------
 -- Helper Functions
 --------------------------------------------------------------------------------
 
@@ -1969,7 +1843,7 @@ instance FromJSON ProxyMessage where
 allow :: AgentResponse
 allow =
   AgentResponse
-    { respVersion = 1
+    { respVersion = protocolVersion
     , respDecision = Allow
     , respRequestHeaders = []
     , respResponseHeaders = []
@@ -1995,6 +1869,18 @@ redirect url status =
 challenge :: Text -> HashMap Text Text -> AgentResponse
 challenge typ params =
   allow {respDecision = Challenge typ params}
+
+-- | Add a request header (set, replacing any existing value) to a response.
+--
+-- @
+-- pure (setRequestHeader "X-Hello" "from-agent" allow)
+-- @
+setRequestHeader :: Text -> Text -> AgentResponse -> AgentResponse
+setRequestHeader name value r = r {respRequestHeaders = respRequestHeaders r <> [HeaderSet name value]}
+
+-- | Add a response header (set) to a response.
+setResponseHeader :: Text -> Text -> AgentResponse -> AgentResponse
+setResponseHeader name value r = r {respResponseHeaders = respResponseHeaders r <> [HeaderSet name value]}
 
 -- | Create a healthy status
 healthy :: Text -> Word64 -> HealthStatus

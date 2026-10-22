@@ -1,62 +1,52 @@
 -- |
 -- Module      : Zentinel.Agent.Transport.UDS
--- Description : Unix Domain Socket transport for Zentinel agents
+-- Description : Agent protocol v2 over a Unix domain socket
 -- Copyright   : (c) Raskell, 2026
 -- License     : Apache-2.0
 -- Maintainer  : agents@raskell.io
 -- Stability   : experimental
 --
--- This module implements the UDS (Unix Domain Socket) transport for
--- Zentinel agents. It handles connection management, message framing,
--- and the handshake protocol.
+-- The proxy opens one or more connections to the socket. On each it sends a
+-- handshake request (0x01), which is answered with the agent's capabilities
+-- (0x02); then a Configure message (0x17) carrying the agent's @config { }@
+-- block, which is answered like any event before the proxy uses the
+-- connection; then events. Requests are multiplexed over a connection, so
+-- events are handled concurrently and every 'AgentResponse' (0x20) carries
+-- its request's correlation id in @audit.custom.correlation_id@. Pings
+-- (0x41) are answered with a Pong (0x42) carrying the same payload.
 --
--- = Wire Protocol
---
--- Messages are framed with a 4-byte big-endian length prefix:
---
--- @
--- +----------------+------------------+
--- | Length (4 bytes) | JSON Payload     |
--- | big-endian u32   | (length bytes)   |
--- +----------------+------------------+
--- @
---
--- = Usage
---
--- @
--- runUdsServer config handler
--- @
+-- See "Zentinel.Agent.Wire" for the framing.
 module Zentinel.Agent.Transport.UDS
   ( -- * Server
     UdsServerConfig (..)
   , defaultUdsConfig
   , runUdsServer
 
-    -- * Connection
-  , UdsConnection (..)
-
-    -- * Errors
-  , UdsError (..)
+    -- * Dispatch (shared with the gRPC transport)
+  , dispatchEvent
+  , configure
   ) where
 
 import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (newMVar, withMVar)
 import Control.Concurrent.STM
-import Control.Exception (Exception, SomeException, bracket, catch, finally, throwIO)
+import Control.Exception (SomeException, bracket, catch, finally, try)
 import Control.Monad (forever, void, when)
-import Data.Aeson (ToJSON, Value (..), toJSON)
-import Data.IORef
+import Data.Aeson (FromJSON, ToJSON, Value (..), eitherDecodeStrict, encode, fromJSON)
+import Data.Aeson qualified as A
+import Data.ByteString (ByteString)
+import Data.ByteString.Lazy qualified as LBS
+import Data.HashMap.Strict qualified as HM
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time.Clock.POSIX (getPOSIXTime)
-import Data.Word (Word64)
-import Network.Socket hiding (recv, send)
-import Zentinel.Agent.Handler
-import Zentinel.Agent.Internal.Framing
-import Zentinel.Agent.Internal.Logging
-import Zentinel.Agent.Types
+import Data.Text.Encoding qualified as TE
+import Network.Socket
 import System.Directory (removeFile)
 import System.Posix.Files (setFileMode)
-import UnliftIO (MonadUnliftIO, liftIO, withRunInIO)
+import Zentinel.Agent.Handler
+import Zentinel.Agent.Internal.Logging
+import Zentinel.Agent.Types
+import Zentinel.Agent.Wire
 
 -- | UDS server configuration
 data UdsServerConfig = UdsServerConfig
@@ -83,247 +73,141 @@ defaultUdsConfig =
     , udsLogAction = stderrLogger Info
     }
 
--- | UDS transport errors
-data UdsError
-  = UdsBindError !String
-  | UdsAcceptError !String
-  | UdsHandshakeError !String
-  | UdsProtocolError !String
-  | UdsConnectionClosed
-  | UdsFramingError !FramingError
-  deriving stock (Show, Eq)
-
-instance Exception UdsError
-
--- | Active UDS connection
-data UdsConnection = UdsConnection
-  { udsConnSocket :: !Socket
-  , udsConnPeerId :: !Text
-  , udsConnPeerVersion :: !Text
-  }
-
--- | Run the UDS server
+-- | Serve the agent on a Unix socket until the thread is killed.
 runUdsServer ::
   forall m.
-  (MonadUnliftIO m, AgentHandler m) =>
+  AgentHandler m =>
   UdsServerConfig ->
   (forall a. m a -> IO a) ->
   IO ()
 runUdsServer config runM = do
-  -- Get capabilities first
-  caps <- runM capabilities
-
-  -- Remove existing socket file if present
-  removeFile (udsSocketPath config) `catch` \(_ :: SomeException) -> pure ()
-
-  -- Create and bind socket
-  sock <- socket AF_UNIX Stream defaultProtocol
-  bind sock (SockAddrUnix (udsSocketPath config))
-
-  -- Set socket permissions
-  setFileMode (udsSocketPath config) (fromIntegral (udsSocketMode config))
-
-  -- Start listening
-  listen sock (udsBacklog config)
-
-  logInfo (udsLogAction config) $
-    "UDS server listening on " <> T.pack (udsSocketPath config)
-
-  -- Track active connections
-  activeConns <- newTVarIO (0 :: Int)
-
-  -- Accept loop
-  let acceptLoop = forever $ do
-        -- Check connection limit
-        canAccept <- atomically $ do
-          n <- readTVar activeConns
-          if n < udsMaxConnections config
+  let path = udsSocketPath config
+      logger = udsLogAction config
+  removeFile path `catch` \(_ :: SomeException) -> pure ()
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \sock -> do
+    bind sock (SockAddrUnix path)
+    setFileMode path (fromIntegral (udsSocketMode config))
+    listen sock (udsBacklog config)
+    logInfo logger $ "UDS server listening on " <> T.pack path
+    active <- newTVarIO (0 :: Int)
+    let acceptLoop = forever $ do
+          admitted <- atomically $ do
+            n <- readTVar active
+            if n < udsMaxConnections config
+              then writeTVar active (n + 1) >> pure True
+              else pure False
+          if admitted
             then do
-              writeTVar activeConns (n + 1)
-              pure True
-            else pure False
+              (client, _) <- accept sock
+              void . forkIO $
+                handleConnection logger runM client
+                  `finally` (close client >> atomically (modifyTVar' active (subtract 1)))
+            else threadDelay 10000
+    acceptLoop `finally` (removeFile path `catch` \(_ :: SomeException) -> pure ())
 
-        if canAccept
-          then do
-            (clientSock, _) <- accept sock
-            void $
-              forkIO $
-                handleConnection config runM caps clientSock
-                  `finally` atomically (modifyTVar' activeConns (subtract 1))
-          else do
-            -- Wait before retrying
-            threadDelay 10000
-
-  acceptLoop `finally` do
-    close sock
-    removeFile (udsSocketPath config) `catch` \(_ :: SomeException) -> pure ()
-
--- | Handle a single connection
+-- | Serve one proxy connection: handshake, then messages until it closes.
 handleConnection ::
   forall m.
-  (MonadUnliftIO m, AgentHandler m) =>
-  UdsServerConfig ->
-  (forall a. m a -> IO a) ->
-  AgentCapabilities ->
-  Socket ->
-  IO ()
-handleConnection config runM caps clientSock = do
-  let logger = udsLogAction config
-
-  -- Perform handshake
-  handshakeResult <- performHandshake logger caps clientSock
-
-  case handshakeResult of
-    Left err -> do
-      logError logger $ "Handshake failed: " <> T.pack (show err)
-      close clientSock
-    Right conn -> do
-      logInfo logger $ "Connection established with " <> udsConnPeerId conn
-
-      -- Message handling loop
-      messageLoop config runM conn
-        `catch` \(e :: SomeException) -> do
-          logWarn logger $ "Connection error: " <> T.pack (show e)
-        `finally` do
-          logInfo logger $ "Connection closed: " <> udsConnPeerId conn
-          close (udsConnSocket conn)
-
--- | Perform handshake with proxy
-performHandshake ::
+  AgentHandler m =>
   LogAction IO LogMessage ->
-  AgentCapabilities ->
+  (forall a. m a -> IO a) ->
   Socket ->
-  IO (Either UdsError UdsConnection)
-performHandshake logger caps sock = do
-  -- Read handshake request
-  msgResult <- readFramedMessage sock
-  case msgResult of
-    Left err -> pure $ Left (UdsFramingError err)
-    Right (proxyMsg :: ProxyMessage) ->
-      case proxyMsg of
-        ProxyMsgHandshake req -> do
-          logDebug logger $ "Received handshake from " <> hsReqProxyId req
-
-          -- Negotiate protocol version
-          let requestedVersions = hsReqSupportedVersions req
-              ourVersion = capProtocolVersion caps
-              negotiatedVersion =
-                if ourVersion `elem` requestedVersions
-                  then ourVersion
-                  else
-                    if 2 `elem` requestedVersions
-                      then 2
-                      else head requestedVersions
-
-          -- Send handshake response
-          let response =
-                HandshakeResponse
-                  { hsRespProtocolVersion = negotiatedVersion
-                  , hsRespCapabilities = caps
-                  , hsRespSuccess = True
-                  , hsRespError = Nothing
-                  }
-              agentMsg = AgentMsgHandshakeResponse response
-
-          writeFramedMessage sock agentMsg
-
-          pure $
-            Right
-              UdsConnection
-                { udsConnSocket = sock
-                , udsConnPeerId = hsReqProxyId req
-                , udsConnPeerVersion = hsReqProxyVersion req
-                }
-        _ ->
-          pure $ Left (UdsHandshakeError "Expected handshake message")
-
--- | Main message handling loop
-messageLoop ::
-  forall m.
-  (MonadUnliftIO m, AgentHandler m) =>
-  UdsServerConfig ->
-  (forall a. m a -> IO a) ->
-  UdsConnection ->
   IO ()
-messageLoop config runM conn = do
-  let sock = udsConnSocket conn
-      logger = udsLogAction config
+handleConnection logger runM sock = do
+  writeLock <- newMVar ()
+  let send t payload =
+        withMVar writeLock $ \_ ->
+          writeFrame sock t payload >>= \case
+            Left err -> logError logger $ "Could not send a frame: " <> T.pack (show err)
+            Right () -> pure ()
+      sendJSON :: ToJSON v => MessageType -> v -> IO ()
+      sendJSON t v = send t (LBS.toStrict (encode v))
+      loop = do
+        frame <- readFrame sock
+        case frame of
+          Left err -> logError logger $ "Framing error: " <> T.pack (show err)
+          Right Nothing -> logDebug logger "Connection closed by the proxy"
+          Right (Just (byte, payload)) -> do
+            case messageTypeFromByte byte of
+              Just MsgPing -> send MsgPong payload
+              Just MsgConfigure ->
+                -- Before reading on: no request on this connection may be
+                -- handled before its configuration is.
+                respond MsgConfigure payload >>= sendJSON MsgAgentResponse
+              Just t
+                | Just _ <- eventMessageType t ->
+                    void . forkIO $ respond t payload >>= sendJSON MsgAgentResponse
+              Just MsgCancel -> pure ()
+              _ -> logDebug logger $ "Ignoring message type " <> T.pack (show byte)
+            loop
+      respond t payload = do
+        let value = either (const Null) id (eitherDecodeStrict payload :: Either String Value)
+        resp <-
+          try (dispatchEvent runM t payload) >>= \case
+            Right r -> pure r
+            Left (e :: SomeException) -> do
+              logError logger $ "Handler failed: " <> T.pack (show e)
+              pure allow
+        pure (withCorrelationId (correlationIdOf value) resp)
 
-  forever $ do
-    -- Read next message
-    msgResult <- readFramedMessage sock
-    case msgResult of
-      Left UnexpectedEof -> do
-        logDebug logger "Connection closed by peer"
-        throwIO UdsConnectionClosed
-      Left err -> do
-        logError logger $ "Framing error: " <> T.pack (show err)
-        throwIO (UdsFramingError err)
-      Right (proxyMsg :: ProxyMessage) -> do
-        -- Handle message and get response
-        responseMsg <- handleMessage runM proxyMsg
-        case responseMsg of
-          Just msg -> writeFramedMessage sock msg
-          Nothing -> pure ()
+  frame <- readFrame sock
+  case frame of
+    Right (Just (byte, payload))
+      | messageTypeFromByte byte == Just MsgHandshakeRequest ->
+          case eitherDecodeStrict payload of
+            Left err -> logError logger $ "Invalid handshake request: " <> T.pack err
+            Right (req :: HandshakeRequest) -> do
+              caps <- runM capabilities
+              let reply = udsHandshakeResponse caps (hsReqSupportedVersions req)
+              sendJSON MsgHandshakeResponse reply
+              when (protocolVersion `elem` hsReqSupportedVersions req) $ do
+                logInfo logger $
+                  "Handshake with " <> hsReqProxyId req <> " " <> hsReqProxyVersion req
+                loop
+    Right (Just (byte, _)) ->
+      logError logger $ "Expected a handshake request, got message type " <> T.pack (show byte)
+    Right Nothing -> pure ()
+    Left err -> logError logger $ "Framing error: " <> T.pack (show err)
 
--- | Handle a proxy message and return optional response
-handleMessage ::
+-- | Apply a configuration: allow if 'onConfigure' accepts it, a 500 block
+-- (which the proxy treats as a rejection) otherwise.
+configure :: AgentHandler m => Value -> Maybe Text -> m AgentResponse
+configure config version = do
+  accepted <- onConfigure config version
+  pure $ if accepted then allow else block 500 "Configuration rejected"
+
+-- | Handle one event message (JSON payload of the given type) and produce
+-- the response, without the correlation id.
+dispatchEvent ::
   forall m.
-  (MonadUnliftIO m, AgentHandler m) =>
+  AgentHandler m =>
   (forall a. m a -> IO a) ->
-  ProxyMessage ->
-  IO (Maybe AgentMessage)
-handleMessage runM = \case
-  ProxyMsgRequestHeaders event -> do
-    response <- runM (onRequestHeaders event)
-    pure $ Just (AgentMsgResponse response)
-  ProxyMsgRequestBodyChunk event -> do
-    response <- runM (onRequestBodyChunk event)
-    pure $ Just (AgentMsgResponse response)
-  ProxyMsgResponseHeaders event -> do
-    response <- runM (onResponseHeaders event)
-    pure $ Just (AgentMsgResponse response)
-  ProxyMsgResponseBodyChunk event -> do
-    response <- runM (onResponseBodyChunk event)
-    pure $ Just (AgentMsgResponse response)
-  ProxyMsgRequestComplete event -> do
-    runM (onRequestComplete event)
-    pure Nothing
-  ProxyMsgWebSocketFrame event -> do
-    response <- runM (onWebSocketFrame event)
-    pure $ Just (AgentMsgResponse response)
-  ProxyMsgGuardrailInspect event -> do
-    response <- runM (onGuardrailInspect event)
-    pure $ Just (AgentMsgGuardrailResponse response)
-  ProxyMsgCancel cancel -> do
-    runM (onCancel cancel)
-    pure Nothing
-  ProxyMsgConfigUpdate req -> do
-    accepted <- runM (onConfigure (toJSON (cfgUpdateType req)) (Just (cfgRequestId req)))
-    timestamp <- getCurrentTimeMs
-    let response =
-          ConfigUpdateResponse
-            { cfgRespRequestId = cfgRequestId req
-            , cfgRespAccepted = accepted
-            , cfgRespError = Nothing
-            , cfgRespTimestampMs = timestamp
-            }
-    pure $ Just (AgentMsgConfigResponse response)
-  ProxyMsgShutdown reason timeout -> do
-    runM (onShutdown reason timeout)
-    pure Nothing
-  ProxyMsgDrain timeout reason -> do
-    runM (onDrain timeout reason)
-    pure Nothing
-  ProxyMsgFlowControl _signal -> do
-    -- Flow control signals are handled internally
-    pure Nothing
-  ProxyMsgHandshake _ -> do
-    -- Handshake should have already been handled
-    pure Nothing
-
--- | Get current time in milliseconds
-getCurrentTimeMs :: IO Word64
-getCurrentTimeMs = do
-  t <- getPOSIXTime
-  pure $ round (t * 1000)
+  MessageType ->
+  ByteString ->
+  IO AgentResponse
+dispatchEvent runM t payload = case t of
+  MsgConfigure -> do
+    v <- decodeOr Null
+    let (cfg, version) = configureFromPayload v
+    runM (configure cfg version)
+  MsgRequestHeaders -> withEvent onRequestHeaders
+  MsgRequestBodyChunk -> withEvent onRequestBodyChunk
+  MsgResponseHeaders -> withEvent onResponseHeaders
+  MsgResponseBodyChunk -> withEvent onResponseBodyChunk
+  MsgWebSocketFrame -> withEvent onWebSocketFrame
+  MsgRequestComplete -> withEvent (\e -> onRequestComplete e >> pure allow)
+  MsgGuardrailInspect -> withEvent $ \e -> do
+    result <- onGuardrailInspect e
+    -- The proxy reads a guardrail verdict from this routing metadata key.
+    let raw = TE.decodeUtf8 (LBS.toStrict (encode result))
+    pure allow {respRoutingMetadata = HM.singleton "guardrail_response" raw}
+  _ -> pure allow
+  where
+    decodeOr :: Value -> IO Value
+    decodeOr d = pure (either (const d) id (eitherDecodeStrict payload))
+    withEvent :: FromJSON e => (e -> m AgentResponse) -> IO AgentResponse
+    withEvent f = do
+      v <- decodeOr Null
+      case fromJSON v of
+        A.Success e -> runM (f e)
+        A.Error err -> fail ("could not decode " <> show t <> ": " <> err)

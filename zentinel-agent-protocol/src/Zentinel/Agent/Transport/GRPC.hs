@@ -1,508 +1,401 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE OverloadedLabels #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
+
 -- |
 -- Module      : Zentinel.Agent.Transport.GRPC
--- Description : gRPC transport for Zentinel agents
+-- Description : Agent protocol v2 over gRPC
 -- Copyright   : (c) Raskell, 2026
 -- License     : Apache-2.0
 -- Maintainer  : agents@raskell.io
 -- Stability   : experimental
 --
--- This module implements the gRPC transport for Zentinel agents.
--- It provides a bidirectional streaming interface for communication
--- with the Zentinel proxy over TCP.
+-- Serves @zentinel.agent.v2.AgentServiceV2@ (the proxy's
+-- @agent_v2.proto@, vendored under @proto/@) with
+-- <https://hackage.haskell.org/package/grapesy grapesy>.
 --
--- = Protocol
---
--- The gRPC transport uses bidirectional streaming over TCP with
--- length-prefixed framing (v1 JSON encoding):
---
--- * Proxy streams 'ProxyMessage' to the agent
--- * Agent streams 'AgentMessage' back
---
--- Messages are framed identically to the UDS transport: a 4-byte
--- big-endian length prefix followed by the payload (v1 JSON encoding).
---
--- = Connection Lifecycle
---
--- 1. Proxy connects to the gRPC TCP endpoint
--- 2. Proxy sends a 'ProxyMsgHandshake' message
--- 3. Agent responds with 'AgentMsgHandshakeResponse' containing capabilities
--- 4. Bidirectional message loop: proxy sends events, agent sends responses
--- 5. Connection closes on shutdown, drain, or error
---
--- = Usage
---
--- @
--- runGrpcServer config handler
--- @
---
--- = Note
---
--- This module uses JSON-over-TCP with length-prefixed framing (v1 JSON
--- encoding) as the wire format. This provides wire compatibility with the
--- protocol while keeping the implementation straightforward. For production deployments requiring
--- native gRPC\/HTTP2 framing, generate Haskell types from the .proto files
--- using @proto3-suite@ and adapt the handlers accordingly.
+-- The proxy opens one bidirectional @ProcessStream@ per connection. It waits
+-- for the stream's response headers before it sends anything, so they are
+-- sent as soon as the stream opens. Then it sends a handshake, a
+-- @ConfigureEvent@ followed by a @Ping@ (the @Pong@ tells it the
+-- configuration was applied; a rejected configuration ends the stream), and
+-- events. Events are handled concurrently; every response carries its
+-- request's correlation id.
 module Zentinel.Agent.Transport.GRPC
-  ( -- * Server
-    GrpcServerConfig (..)
-  , defaultGrpcConfig
+  ( GrpcServerConfig (..)
   , runGrpcServer
-
-    -- * Address
-  , HostPort (..)
-
-    -- * Errors
-  , GrpcError (..)
   ) where
 
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (newMVar, withMVar)
 import Control.Concurrent.STM
-import Control.Exception (Exception, SomeException, catch, finally, throwIO)
-import Control.Monad (forever, void)
-import Data.Aeson (FromJSON, ToJSON, eitherDecodeStrict, encode, toJSON)
-import Data.Bits (shiftL, shiftR, (.&.), (.|.))
-import Data.ByteString (ByteString)
-import Data.ByteString qualified as BS
+import Control.Exception (SomeException, try)
+import Control.Monad (void)
+import Data.Aeson (Value (..), eitherDecodeStrict, encode)
 import Data.ByteString.Lazy qualified as LBS
+import Data.ByteString (ByteString)
+import Data.ByteString.Base64 qualified as B64
+import Data.HashMap.Strict qualified as HM
+import Data.Map.Strict qualified as M
+import Data.ProtoLens.Labels ()
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Vector qualified as V
+import Data.Int (Int32)
 import Data.Word (Word16, Word32, Word64)
-import Network.Socket hiding (recv, send)
-import Network.Socket.ByteString qualified as SBS
+import Network.GRPC.Common (NoMetadata (..), StreamElem (..))
+import Network.GRPC.Common qualified as G
+import Network.GRPC.Common.Protobuf (Proto (..), Protobuf, defMessage, getProto, (&), (.~), (^.))
+import Network.GRPC.Server qualified as G
+import Network.GRPC.Server.Run qualified as G
+import Proto.AgentV2 qualified as P
 import Zentinel.Agent.Handler
 import Zentinel.Agent.Internal.Logging
+import Zentinel.Agent.Transport.UDS (configure)
 import Zentinel.Agent.Types
-import UnliftIO (MonadUnliftIO)
 
--- | Host and port for gRPC server
-data HostPort = HostPort
-  { hpHost :: !Text
-  , hpPort :: !Word16
-  }
-  deriving stock (Eq, Show)
+type ProcessStream = Protobuf P.AgentServiceV2 "processStream"
+
+type instance G.RequestMetadata (Protobuf P.AgentServiceV2 meth) = NoMetadata
+type instance G.ResponseInitialMetadata (Protobuf P.AgentServiceV2 meth) = NoMetadata
+type instance G.ResponseTrailingMetadata (Protobuf P.AgentServiceV2 meth) = NoMetadata
 
 -- | gRPC server configuration
 data GrpcServerConfig = GrpcServerConfig
-  { grpcAddress :: !HostPort
-  -- ^ Address to bind to
-  , grpcMaxMessageSize :: !Int
-  -- ^ Maximum message size (default: 10MB)
-  , grpcMaxConnections :: !Int
-  -- ^ Maximum concurrent connections
+  { grpcHost :: !Text
+  , grpcPort :: !Word16
   , grpcLogAction :: !(LogAction IO LogMessage)
-  -- ^ Logger
   }
 
--- | Default gRPC configuration
-defaultGrpcConfig :: GrpcServerConfig
-defaultGrpcConfig =
-  GrpcServerConfig
-    { grpcAddress = HostPort "0.0.0.0" 50051
-    , grpcMaxMessageSize = 10 * 1024 * 1024
-    , grpcMaxConnections = 100
-    , grpcLogAction = stderrLogger Info
-    }
-
--- | gRPC transport errors
-data GrpcError
-  = GrpcBindError !String
-  | GrpcHandshakeError !String
-  | GrpcProtocolError !String
-  | GrpcConnectionClosed
-  | GrpcParseError !String
-  | GrpcFramingError !String
-  | GrpcMessageTooLarge !Int !Int
-  deriving stock (Show, Eq)
-
-instance Exception GrpcError
-
--- | Active gRPC connection state
-data GrpcConnection = GrpcConnection
-  { grpcConnSocket :: !Socket
-  , grpcConnPeerId :: !Text
-  , grpcConnPeerVersion :: !Text
-  , grpcConnPeerAddr :: !SockAddr
-  }
-
--- | Run the gRPC server
---
--- Starts a TCP server that accepts connections and handles the Zentinel
--- bidirectional streaming protocol. Each connection goes through a handshake
--- phase followed by a message loop that routes proxy events to the
--- appropriate 'AgentHandler' methods.
---
--- The server enforces a maximum connection limit specified by
--- 'grpcMaxConnections'. When the limit is reached, new connections are
--- delayed until an existing connection closes.
---
--- This function blocks until the server is shut down.
+-- | Serve the agent over gRPC (plaintext HTTP/2) until the thread is killed.
 runGrpcServer ::
   forall m.
-  (MonadUnliftIO m, AgentHandler m) =>
+  AgentHandler m =>
   GrpcServerConfig ->
   (forall a. m a -> IO a) ->
   IO ()
 runGrpcServer config runM = do
-  -- Get capabilities first
-  caps <- runM capabilities
-
   let logger = grpcLogAction config
-      addr = grpcAddress config
-      host = T.unpack (hpHost addr)
-
   logInfo logger $
-    "gRPC server starting on "
-      <> hpHost addr
-      <> ":"
-      <> T.pack (show (hpPort addr))
+    "gRPC server listening on " <> grpcHost config <> ":" <> T.pack (show (grpcPort config))
+  G.runServerWithHandlers
+    G.def
+    G.ServerConfig
+      { G.serverInsecure =
+          Just
+            G.InsecureConfig
+              { G.insecureHost = Just (T.unpack (grpcHost config))
+              , G.insecurePort = fromIntegral (grpcPort config)
+              }
+      , G.serverSecure = Nothing
+      }
+    [G.someRpcHandler (G.mkRpcHandler @ProcessStream (processStream logger runM))]
 
-  -- Track active connections
-  activeConns <- newTVarIO (0 :: Int)
-
-  -- Resolve bind address
-  let hints =
-        defaultHints
-          { addrFlags = [AI_PASSIVE]
-          , addrSocketType = Stream
-          }
-  addrInfos <- getAddrInfo (Just hints) (Just host) (Just (show (hpPort addr)))
-
-  case addrInfos of
-    [] -> throwIO (GrpcBindError $ "Cannot resolve address: " <> host <> ":" <> show (hpPort addr))
-    (addrInfo : _) -> do
-      -- Create TCP socket
-      sock <- socket (addrFamily addrInfo) Stream defaultProtocol
-      setSocketOption sock ReuseAddr 1
-
-      -- Bind and listen
-      bind sock (addrAddress addrInfo)
-        `catch` \(e :: SomeException) ->
-          throwIO (GrpcBindError $ "Failed to bind: " <> show e)
-
-      listen sock (min (grpcMaxConnections config) 128)
-
-      logInfo logger $
-        "gRPC server listening on "
-          <> hpHost addr
-          <> ":"
-          <> T.pack (show (hpPort addr))
-
-      -- Accept loop
-      let acceptLoop = forever $ do
-            -- Check connection limit
-            canAccept <- atomically $ do
-              n <- readTVar activeConns
-              if n < grpcMaxConnections config
-                then do
-                  writeTVar activeConns (n + 1)
-                  pure True
-                else pure False
-
-            if canAccept
-              then do
-                (clientSock, clientAddr) <- accept sock
-                logDebug logger $
-                  "Accepted connection from " <> T.pack (show clientAddr)
-                void $
-                  forkIO $
-                    handleGrpcConnection config runM caps clientSock clientAddr
-                      `finally` do
-                        atomically (modifyTVar' activeConns (subtract 1))
-                        logDebug logger $
-                          "Connection slot released for " <> T.pack (show clientAddr)
-              else do
-                -- Wait before retrying when at capacity
-                threadDelay 10000
-
-      acceptLoop `finally` do
-        logInfo logger "gRPC server shutting down"
-        close sock
-
--- | Handle a single gRPC connection
---
--- Performs the handshake protocol and then enters the message loop.
--- Any errors during handshake or message processing are caught and logged.
-handleGrpcConnection ::
+processStream ::
   forall m.
-  (MonadUnliftIO m, AgentHandler m) =>
-  GrpcServerConfig ->
-  (forall a. m a -> IO a) ->
-  AgentCapabilities ->
-  Socket ->
-  SockAddr ->
-  IO ()
-handleGrpcConnection config runM caps clientSock clientAddr = do
-  let logger = grpcLogAction config
-
-  -- Perform handshake
-  handshakeResult <- performHandshake config logger caps clientSock clientAddr
-
-  case handshakeResult of
-    Left err -> do
-      logError logger $ "Handshake failed from " <> T.pack (show clientAddr) <> ": " <> T.pack (show err)
-      close clientSock
-    Right conn -> do
-      logInfo logger $
-        "gRPC connection established with "
-          <> grpcConnPeerId conn
-          <> " (v"
-          <> grpcConnPeerVersion conn
-          <> ")"
-
-      -- Message handling loop
-      messageLoop config runM conn
-        `catch` \(e :: SomeException) -> do
-          logWarn logger $
-            "gRPC connection error with "
-              <> grpcConnPeerId conn
-              <> ": "
-              <> T.pack (show e)
-        `finally` do
-          logInfo logger $ "gRPC connection closed: " <> grpcConnPeerId conn
-          close (grpcConnSocket conn)
-
--- | Perform handshake with the connecting proxy
---
--- Reads the first message from the connection, which must be a
--- 'ProxyMsgHandshake'. Negotiates protocol version and responds
--- with the agent's capabilities.
-performHandshake ::
-  GrpcServerConfig ->
+  AgentHandler m =>
   LogAction IO LogMessage ->
-  AgentCapabilities ->
-  Socket ->
-  SockAddr ->
-  IO (Either GrpcError GrpcConnection)
-performHandshake config logger caps sock clientAddr = do
-  -- Read the first framed message
-  msgResult <- readGrpcMessage config sock
-  case msgResult of
-    Left err -> pure $ Left err
-    Right (proxyMsg :: ProxyMessage) ->
-      case proxyMsg of
-        ProxyMsgHandshake req -> do
-          logDebug logger $ "Received handshake from " <> hsReqProxyId req
-
-          -- Negotiate protocol version
-          let requestedVersions = hsReqSupportedVersions req
-              ourVersion = capProtocolVersion caps
-              negotiatedVersion =
-                if ourVersion `elem` requestedVersions
-                  then ourVersion
-                  else
-                    if 2 `elem` requestedVersions
-                      then 2
-                      else head requestedVersions
-
-          -- Build and send handshake response
-          let response =
-                HandshakeResponse
-                  { hsRespProtocolVersion = negotiatedVersion
-                  , hsRespCapabilities = caps
-                  , hsRespSuccess = True
-                  , hsRespError = Nothing
-                  }
-              agentMsg = AgentMsgHandshakeResponse response
-
-          writeGrpcMessage sock agentMsg
-
-          pure $
-            Right
-              GrpcConnection
-                { grpcConnSocket = sock
-                , grpcConnPeerId = hsReqProxyId req
-                , grpcConnPeerVersion = hsReqProxyVersion req
-                , grpcConnPeerAddr = clientAddr
-                }
-        _ ->
-          pure $ Left (GrpcHandshakeError "Expected handshake message as first message")
-
--- | Main message handling loop
---
--- Reads proxy messages from the connection, routes them to the
--- appropriate 'AgentHandler' method, and sends back responses.
--- Continues until the connection is closed or an error occurs.
-messageLoop ::
-  forall m.
-  (MonadUnliftIO m, AgentHandler m) =>
-  GrpcServerConfig ->
   (forall a. m a -> IO a) ->
-  GrpcConnection ->
+  G.Call ProcessStream ->
   IO ()
-messageLoop config runM conn = do
-  let sock = grpcConnSocket conn
-      logger = grpcLogAction config
+processStream logger runM call = do
+  -- The proxy waits for the response headers before it sends the handshake.
+  G.initiateResponse call
+  sendLock <- newMVar ()
+  inFlight <- newTVarIO (0 :: Int)
+  let send :: P.AgentToProxy -> IO ()
+      send msg = withMVar sendLock $ \_ -> G.sendNextOutput call (Proto msg)
+      respond cid act = do
+        atomically (modifyTVar' inFlight (+ 1))
+        void . forkIO $ do
+          resp <-
+            try (runM act) >>= \case
+              Right r -> pure r
+              Left (e :: SomeException) -> do
+                logError logger $ "Handler failed: " <> T.pack (show e)
+                pure allow
+          send (defMessage & #response .~ responseToProto cid resp)
+          atomically (modifyTVar' inFlight (subtract 1))
+      finish = do
+        atomically (readTVar inFlight >>= check . (== 0))
+        G.sendTrailers call NoMetadata
+      handle :: P.ProxyToAgent -> IO Bool
+      handle msg = case msg ^. #maybe'message of
+        Just (P.ProxyToAgent'Handshake hs) -> do
+          caps <- runM capabilities
+          send (defMessage & #handshake .~ handshakeToProto caps (hs ^. #supportedVersions))
+          pure (protocolVersion `elem` (hs ^. #supportedVersions))
+        Just (P.ProxyToAgent'Configure ev) -> do
+          let cfg = either (const Null) id (eitherDecodeStrict (TE.encodeUtf8 (ev ^. #configJson)))
+          -- In order: the Ping that follows is answered only once this is applied.
+          resp <- runM (configure cfg (ev ^. #maybe'configVersion))
+          case respDecision resp of
+            Allow -> pure True
+            _ -> do
+              logError logger "Configuration rejected; ending the stream"
+              pure False
+        Just (P.ProxyToAgent'Ping ping) -> do
+          now <- nowMs
+          send
+            ( defMessage
+                & #pong
+                  .~ ( defMessage
+                        & #sequence .~ (ping ^. #sequence)
+                        & #pingTimestampMs .~ (ping ^. #timestampMs)
+                        & #timestampMs .~ now
+                     )
+            )
+          pure True
+        Just (P.ProxyToAgent'RequestHeaders ev) -> do
+          let e = requestHeadersFromProto ev
+          respond (metaCorrelationId (reqHdrMetadata e)) (onRequestHeaders e)
+          pure True
+        Just (P.ProxyToAgent'RequestBodyChunk ev) -> do
+          let e = requestBodyFromProto ev
+          respond (reqBodyCorrelationId e) (onRequestBodyChunk e)
+          pure True
+        Just (P.ProxyToAgent'ResponseHeaders ev) -> do
+          let e = responseHeadersFromProto ev
+          respond (respHdrCorrelationId e) (onResponseHeaders e)
+          pure True
+        Just (P.ProxyToAgent'ResponseBodyChunk ev) -> do
+          let e = responseBodyFromProto ev
+          respond (respBodyCorrelationId e) (onResponseBodyChunk e)
+          pure True
+        Just (P.ProxyToAgent'RequestComplete ev) -> do
+          let e = requestCompleteFromProto ev
+          respond (reqCompCorrelationId e) (onRequestComplete e >> pure allow)
+          pure True
+        Just (P.ProxyToAgent'WebsocketFrame ev) -> do
+          let e = webSocketFromProto ev
+          respond (wsFrameCorrelationId e) (onWebSocketFrame e)
+          pure True
+        Just (P.ProxyToAgent'Guardrail ev) -> do
+          let e = guardrailFromProto ev
+          respond (grInspectCorrelationId e) (guardrailVerdict <$> onGuardrailInspect e)
+          pure True
+        Just (P.ProxyToAgent'Cancel _) -> pure True
+        Nothing -> pure True
+      loop =
+        G.recvInput call >>= \case
+          StreamElem msg -> handle (getProto msg) >>= \continue -> if continue then loop else finish
+          FinalElem msg _ -> handle (getProto msg) >> finish
+          NoMoreElems _ -> finish
+  loop
 
-  forever $ do
-    -- Read next message
-    msgResult <- readGrpcMessage config sock
-    case msgResult of
-      Left GrpcConnectionClosed -> do
-        logDebug logger $ "Connection closed by peer: " <> grpcConnPeerId conn
-        throwIO GrpcConnectionClosed
-      Left err -> do
-        logError logger $ "Protocol error: " <> T.pack (show err)
-        throwIO err
-      Right (proxyMsg :: ProxyMessage) -> do
-        -- Route message to handler and get optional response
-        responseMsg <- handleMessage runM proxyMsg
-        case responseMsg of
-          Just msg -> writeGrpcMessage sock msg
-          Nothing -> pure ()
-
--- | Route a proxy message to the appropriate handler method
---
--- This implements the same routing logic as the UDS transport,
--- mapping each 'ProxyMessage' variant to the corresponding
--- 'AgentHandler' method and wrapping the result in an 'AgentMessage'.
-handleMessage ::
-  forall m.
-  (MonadUnliftIO m, AgentHandler m) =>
-  (forall a. m a -> IO a) ->
-  ProxyMessage ->
-  IO (Maybe AgentMessage)
-handleMessage runM = \case
-  ProxyMsgRequestHeaders event -> do
-    response <- runM (onRequestHeaders event)
-    pure $ Just (AgentMsgResponse response)
-  ProxyMsgRequestBodyChunk event -> do
-    response <- runM (onRequestBodyChunk event)
-    pure $ Just (AgentMsgResponse response)
-  ProxyMsgResponseHeaders event -> do
-    response <- runM (onResponseHeaders event)
-    pure $ Just (AgentMsgResponse response)
-  ProxyMsgResponseBodyChunk event -> do
-    response <- runM (onResponseBodyChunk event)
-    pure $ Just (AgentMsgResponse response)
-  ProxyMsgRequestComplete event -> do
-    runM (onRequestComplete event)
-    pure Nothing
-  ProxyMsgWebSocketFrame event -> do
-    response <- runM (onWebSocketFrame event)
-    pure $ Just (AgentMsgResponse response)
-  ProxyMsgGuardrailInspect event -> do
-    response <- runM (onGuardrailInspect event)
-    pure $ Just (AgentMsgGuardrailResponse response)
-  ProxyMsgCancel cancel -> do
-    runM (onCancel cancel)
-    pure Nothing
-  ProxyMsgConfigUpdate req -> do
-    accepted <- runM (onConfigure (toJSON (cfgUpdateType req)) (Just (cfgRequestId req)))
-    timestamp <- getCurrentTimeMs
-    let response =
-          ConfigUpdateResponse
-            { cfgRespRequestId = cfgRequestId req
-            , cfgRespAccepted = accepted
-            , cfgRespError = Nothing
-            , cfgRespTimestampMs = timestamp
-            }
-    pure $ Just (AgentMsgConfigResponse response)
-  ProxyMsgShutdown reason timeout -> do
-    runM (onShutdown reason timeout)
-    pure Nothing
-  ProxyMsgDrain timeout reason -> do
-    runM (onDrain timeout reason)
-    pure Nothing
-  ProxyMsgFlowControl _signal -> do
-    -- Flow control signals are handled internally
-    pure Nothing
-  ProxyMsgHandshake _ -> do
-    -- Handshake should have already been handled during connection setup
-    pure Nothing
+nowMs :: IO Word64
+nowMs = round . (* 1000) <$> getPOSIXTime
 
 --------------------------------------------------------------------------------
--- Wire format: length-prefixed framing (v1 JSON encoding)
+-- Conversions
 --------------------------------------------------------------------------------
 
--- | Read a length-prefixed message from a gRPC socket (v1 JSON encoding)
---
--- Wire format: 4-byte big-endian length prefix followed by JSON payload.
--- Validates the message size against 'grpcMaxMessageSize'.
-readGrpcMessage :: FromJSON a => GrpcServerConfig -> Socket -> IO (Either GrpcError a)
-readGrpcMessage config sock = do
-  -- Read 4-byte length header
-  headerResult <- recvExact sock 4
-  case headerResult of
-    Left err -> pure (Left err)
-    Right header -> do
-      let len = decodeBE32 header
-      -- Validate length against configured maximum
-      if fromIntegral len > grpcMaxMessageSize config
-        then pure $ Left (GrpcMessageTooLarge (fromIntegral len) (grpcMaxMessageSize config))
-        else
-          if len == 0
-            then pure $ Left (GrpcParseError "Empty message")
-            else do
-              -- Read payload
-              payloadResult <- recvExact sock (fromIntegral len)
-              case payloadResult of
-                Left err -> pure (Left err)
-                Right payload ->
-                  case eitherDecodeStrict payload of
-                    Left err -> pure $ Left (GrpcParseError err)
-                    Right val -> pure (Right val)
-
--- | Write a length-prefixed message to a gRPC socket (v1 JSON encoding)
---
--- Encodes the message as JSON, prepends a 4-byte big-endian length
--- header, and sends the complete frame.
-writeGrpcMessage :: ToJSON a => Socket -> a -> IO ()
-writeGrpcMessage sock msg = do
-  let payload = LBS.toStrict (encode msg)
-      len = BS.length payload
-      header = encodeBE32 (fromIntegral len)
-      frame = header <> payload
-  sendAll sock frame
-
--- | Receive exactly @n@ bytes from a socket
---
--- Accumulates data from the socket until exactly @n@ bytes have been
--- received. Returns 'GrpcConnectionClosed' if the peer closes the
--- connection before all bytes are received.
-recvExact :: Socket -> Int -> IO (Either GrpcError ByteString)
-recvExact sock n = go n []
+handshakeToProto :: AgentCapabilities -> [Word32] -> P.HandshakeResponse
+handshakeToProto caps versions =
+  defMessage
+    & #protocolVersion .~ protocolVersion
+    & #success .~ ok
+    & #maybe'error .~ (if ok then Nothing else Just "protocol v2 not offered by the proxy")
+    & #capabilities
+      .~ ( defMessage
+            & #protocolVersion .~ protocolVersion
+            & #agentId .~ capAgentId caps
+            & #name .~ capName caps
+            & #version .~ capVersion caps
+            & #supportedEvents .~ map grpcEventNumber (capSupportedEvents caps)
+            & #features
+              .~ ( defMessage
+                    & #streamingBody .~ featStreamingBody f
+                    & #websocket .~ featWebsocket f
+                    & #guardrails .~ featGuardrails f
+                    & #configPush .~ featConfigPush f
+                    & #metricsExport .~ featMetricsExport f
+                    & #concurrentRequests .~ featConcurrentRequests f
+                    & #cancellation .~ featCancellation f
+                    & #flowControl .~ featFlowControl f
+                    & #healthReporting .~ featHealthReporting f
+                 )
+            & #limits
+              .~ ( defMessage
+                    & #maxBodySize .~ fromIntegral (limMaxBodySize l)
+                    & #maxConcurrency .~ limMaxConcurrency l
+                    & #preferredChunkSize .~ fromIntegral (limPreferredChunkSize l)
+                 )
+            & #healthConfig
+              .~ (defMessage & #reportIntervalMs .~ healthReportIntervalMs (capHealthConfig caps))
+         )
   where
-    go 0 chunks = pure $ Right (BS.concat (reverse chunks))
-    go remaining chunks = do
-      chunk <- SBS.recv sock (min remaining 65536)
-      if BS.null chunk
-        then pure $ Left GrpcConnectionClosed
-        else go (remaining - BS.length chunk) (chunk : chunks)
+    ok = protocolVersion `elem` versions
+    f = capFeatures caps
+    l = capLimits caps
 
--- | Send all bytes to a socket
---
--- Repeatedly calls send until all bytes have been transmitted.
--- Throws 'GrpcConnectionClosed' if the socket closes mid-send.
-sendAll :: Socket -> ByteString -> IO ()
-sendAll sock bs
-  | BS.null bs = pure ()
-  | otherwise = do
-      sent <- SBS.send sock bs
-      if sent == 0
-        then throwIO GrpcConnectionClosed
-        else sendAll sock (BS.drop sent bs)
+-- | The number of an event type in the gRPC @EventType@ enum.
+grpcEventNumber :: EventType -> Int32
+grpcEventNumber = \case
+  RequestHeaders -> 1
+  RequestBodyChunk -> 2
+  ResponseHeaders -> 3
+  ResponseBodyChunk -> 4
+  RequestComplete -> 5
+  WebSocketFrame -> 6
+  GuardrailInspect -> 7
+  Configure -> 8
 
--- | Encode a 32-bit value as 4 bytes in big-endian order
-encodeBE32 :: Word32 -> ByteString
-encodeBE32 n =
-  BS.pack
-    [ fromIntegral (shiftR n 24 .&. 0xFF)
-    , fromIntegral (shiftR n 16 .&. 0xFF)
-    , fromIntegral (shiftR n 8 .&. 0xFF)
-    , fromIntegral (n .&. 0xFF)
-    ]
+headersFromProto :: [P.Header] -> HM.HashMap Text (V.Vector Text)
+headersFromProto hs =
+  HM.map V.fromList (HM.fromListWith (flip (<>)) [(h ^. #name, [h ^. #value]) | h <- hs])
 
--- | Decode 4 bytes from big-endian order to a 32-bit value
-decodeBE32 :: ByteString -> Word32
-decodeBE32 bs
-  | BS.length bs < 4 = 0
-  | otherwise =
-      let [b0, b1, b2, b3] = map fromIntegral (BS.unpack (BS.take 4 bs)) :: [Word32]
-       in shiftL b0 24 .|. shiftL b1 16 .|. shiftL b2 8 .|. b3
+requestHeadersFromProto :: P.RequestHeadersEvent -> RequestHeadersEvent
+requestHeadersFromProto ev =
+  RequestHeadersEvent
+    { reqHdrMetadata =
+        RequestMetadata
+          { metaCorrelationId = md ^. #correlationId
+          , metaRequestId = md ^. #requestId
+          , metaClientIp = md ^. #clientIp
+          , metaClientPort = fromIntegral (md ^. #clientPort)
+          , metaServerName = md ^. #maybe'serverName
+          , metaProtocol = md ^. #protocol
+          , metaTlsVersion = md ^. #maybe'tlsVersion
+          , metaTlsCipher = Nothing
+          , metaRouteId = md ^. #maybe'routeId
+          , metaUpstreamId = md ^. #maybe'upstreamId
+          , metaTimestamp = T.pack (show (md ^. #timestampMs))
+          , metaTraceparent = md ^. #maybe'traceparent
+          }
+    , reqHdrMethod = ev ^. #method
+    , reqHdrUri = ev ^. #uri
+    , reqHdrHeaders = headersFromProto (ev ^. #headers)
+    }
+  where
+    md = ev ^. #metadata
 
--- | Get current time in milliseconds since Unix epoch
-getCurrentTimeMs :: IO Word64
-getCurrentTimeMs = do
-  t <- getPOSIXTime
-  pure $ round (t * 1000)
+b64 :: ByteString -> Text
+b64 = TE.decodeUtf8 . B64.encode
+
+requestBodyFromProto :: P.BodyChunkEvent -> RequestBodyChunkEvent
+requestBodyFromProto ev =
+  RequestBodyChunkEvent
+    { reqBodyCorrelationId = ev ^. #correlationId
+    , reqBodyData = b64 (ev ^. #data')
+    , reqBodyIsLast = ev ^. #isLast
+    , reqBodyTotalSize = fromIntegral <$> ev ^. #maybe'totalSize
+    , reqBodyChunkIndex = ev ^. #chunkIndex
+    , reqBodyBytesReceived = fromIntegral (ev ^. #bytesTransferred)
+    }
+
+responseBodyFromProto :: P.BodyChunkEvent -> ResponseBodyChunkEvent
+responseBodyFromProto ev =
+  ResponseBodyChunkEvent
+    { respBodyCorrelationId = ev ^. #correlationId
+    , respBodyData = b64 (ev ^. #data')
+    , respBodyIsLast = ev ^. #isLast
+    , respBodyTotalSize = fromIntegral <$> ev ^. #maybe'totalSize
+    , respBodyChunkIndex = ev ^. #chunkIndex
+    , respBodyBytesSent = fromIntegral (ev ^. #bytesTransferred)
+    }
+
+responseHeadersFromProto :: P.ResponseHeadersEvent -> ResponseHeadersEvent
+responseHeadersFromProto ev =
+  ResponseHeadersEvent
+    { respHdrCorrelationId = ev ^. #correlationId
+    , respHdrStatus = fromIntegral (ev ^. #statusCode)
+    , respHdrHeaders = headersFromProto (ev ^. #headers)
+    }
+
+requestCompleteFromProto :: P.RequestCompleteEvent -> RequestCompleteEvent
+requestCompleteFromProto ev =
+  RequestCompleteEvent
+    { reqCompCorrelationId = ev ^. #correlationId
+    , reqCompStatus = fromIntegral (ev ^. #statusCode)
+    , reqCompDurationMs = ev ^. #durationMs
+    , reqCompRequestBodySize = fromIntegral (ev ^. #bytesReceived)
+    , reqCompResponseBodySize = fromIntegral (ev ^. #bytesSent)
+    , reqCompUpstreamAttempts = 0
+    , reqCompError = ev ^. #maybe'error
+    }
+
+webSocketFromProto :: P.WebSocketFrameEvent -> WebSocketFrameEvent
+webSocketFromProto ev =
+  WebSocketFrameEvent
+    { wsFrameCorrelationId = ev ^. #correlationId
+    , wsFrameOpcode = case ev ^. #frameType of
+        2 -> WsBinary
+        3 -> WsPing
+        4 -> WsPong
+        5 -> WsCloseFrame
+        _ -> WsText
+    , wsFrameData = b64 (ev ^. #payload)
+    , wsFrameClientToServer = ev ^. #clientToServer
+    , wsFrameIndex = 0
+    , wsFrameFin = True
+    , wsFrameRouteId = Nothing
+    , wsFrameClientIp = ""
+    }
+
+guardrailFromProto :: P.GuardrailInspectEvent -> GuardrailInspectEvent
+guardrailFromProto ev =
+  GuardrailInspectEvent
+    { grInspectCorrelationId = ev ^. #correlationId
+    , grInspectType = PromptInjection
+    , grInspectContent = ev ^. #content
+    , grInspectModel = ev ^. #maybe'model
+    , grInspectCategories = []
+    , grInspectRouteId = Nothing
+    , grInspectMetadata = HM.empty
+    }
+
+-- | gRPC responses have no routing metadata, so a guardrail verdict travels
+-- as the decision: a detection blocks.
+guardrailVerdict :: GuardrailResponse -> AgentResponse
+guardrailVerdict r
+  | grRespDetected r =
+      block 403 $ case grRespDetections r of
+        d : _ -> detDescription d
+        [] -> "Blocked by guardrail agent"
+  | otherwise = allow
+
+headerOpToProto :: HeaderOp -> P.HeaderOp
+headerOpToProto = \case
+  HeaderSet n v -> defMessage & #set .~ (defMessage & #name .~ n & #value .~ v)
+  HeaderAdd n v -> defMessage & #add .~ (defMessage & #name .~ n & #value .~ v)
+  HeaderRemove n -> defMessage & #remove .~ n
+
+responseToProto :: Text -> AgentResponse -> P.AgentResponse
+responseToProto cid r =
+  withDecision (respDecision r) $
+    defMessage
+      & #correlationId .~ cid
+      & #requestHeaders .~ map headerOpToProto (respRequestHeaders r)
+      & #responseHeaders .~ map headerOpToProto (respResponseHeaders r)
+      & #needsMore .~ respNeedsMore r
+      & #audit
+        .~ ( defMessage
+              & #tags .~ auditTags a
+              & #ruleIds .~ auditRuleIds a
+              & #reasonCodes .~ auditReasonCodes a
+              & #maybe'confidence .~ (realToFrac <$> auditConfidence a)
+              & #custom .~ M.fromList [(k, customText v) | (k, v) <- HM.toList (auditCustom a)]
+           )
+  where
+    a = respAudit r
+    customText (String s) = s
+    customText v = TE.decodeUtf8 (LBS.toStrict (encode v))
+    withDecision d msg = case d of
+      Allow -> msg & #allow .~ defMessage
+      Block s body hdrs ->
+        msg
+          & #block
+            .~ ( defMessage
+                  & #status .~ fromIntegral s
+                  & #maybe'body .~ body
+                  & #headers
+                    .~ [defMessage & #name .~ n & #value .~ v | (n, v) <- maybe [] HM.toList hdrs]
+               )
+      Redirect url s -> msg & #redirect .~ (defMessage & #url .~ url & #status .~ fromIntegral s)
+      Challenge t ps ->
+        msg
+          & #challenge
+            .~ (defMessage & #challengeType .~ t & #params .~ M.fromList (HM.toList ps))

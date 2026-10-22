@@ -1,11 +1,11 @@
 cabal-version:   3.0
 name:            zentinel-agent-protocol
-version:         0.1.0.0
+version:         0.2.0.0
 synopsis:        Haskell SDK for Zentinel Agent Protocol v2
 description:
   A Haskell SDK for implementing Zentinel agents that communicate with
-  the Zentinel reverse proxy using protocol v2. Supports both Unix Domain
-  Socket (UDS) and gRPC transports.
+  the Zentinel reverse proxy using agent protocol v2, over a Unix domain
+  socket or gRPC (the proxy's @zentinel.agent.v2.AgentServiceV2@ service).
   .
   See the README for usage examples and the full protocol specification.
 
@@ -16,12 +16,21 @@ maintainer:      agents@raskell.io
 copyright:       2026 Raskell
 category:        Network, Security
 build-type:      Simple
-tested-with:     GHC == 9.8.2, GHC == 9.10.1
+tested-with:     GHC == 9.8.4
 extra-doc-files: CHANGELOG.md
+extra-source-files: proto/agent_v2.proto
 
 source-repository head
   type:     git
-  location: https://github.com/zentinelproxy/zentinel-agent-haskell
+  location: https://github.com/zentinelproxy/zentinel-agent-haskell-sdk
+
+flag grpc
+  description:
+    Build the gRPC transport (grapesy). It needs the C library snappy
+    (libsnappy-dev on Debian/Ubuntu, snappy on Homebrew). Turn it off with
+    -f-grpc for a Unix-socket-only build without that dependency.
+  default:     True
+  manual:      True
 
 common warnings
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates
@@ -40,38 +49,46 @@ library
     Zentinel.Agent.Server
     Zentinel.Agent.Health
     Zentinel.Agent.Metrics
+    Zentinel.Agent.Wire
     Zentinel.Agent.Transport.UDS
-    Zentinel.Agent.Transport.GRPC
 
   other-modules:
-    Zentinel.Agent.Internal.Framing
     Zentinel.Agent.Internal.Logging
 
   build-depends:
     , base                  >= 4.19 && < 5
-    , aeson                 >= 2.2  && < 2.3
-    , text                  >= 2.1  && < 2.2
-    , bytestring            >= 0.12 && < 0.13
-    , containers            >= 0.7  && < 0.8
-    , unordered-containers  >= 0.2.20 && < 0.3
+    , aeson                 >= 2.1  && < 2.3
+    , text                  >= 2.0  && < 2.2
+    , bytestring            >= 0.11 && < 0.13
+    , containers            >= 0.6  && < 0.8
+    , unordered-containers  >= 0.2.19 && < 0.3
     , vector                >= 0.13 && < 0.14
     , async                 >= 2.2  && < 2.3
     , stm                   >= 2.5  && < 2.6
-    , network               >= 3.2  && < 3.3
+    , network               >= 3.1  && < 3.3
     , unliftio              >= 0.2.25 && < 0.3
-    , time                  >= 1.14 && < 1.15
-    , uuid                  >= 1.3  && < 1.4
-    , base64                >= 1.0  && < 1.1
-    , hashable              >= 1.4  && < 1.5
+    , time                  >= 1.12 && < 1.15
+    , hashable              >= 1.4  && < 1.6
     , mtl                   >= 2.3  && < 2.4
-    , transformers          >= 0.6  && < 0.7
-    , http2                 >= 5.0  && < 5.4
-    , proto3-suite          >= 0.7  && < 0.9
-    , proto3-wire           >= 1.4  && < 1.5
-    , grpc-haskell          >= 0.3  && < 0.4
     , co-log-core           >= 0.3  && < 0.4
     , scientific            >= 0.3  && < 0.4
-    , deepseq               >= 1.5  && < 1.6
+    , deepseq               >= 1.4  && < 1.6
+    , directory             >= 1.3  && < 1.4
+    , unix                  >= 2.8  && < 2.9
+
+  if flag(grpc)
+    cpp-options:      -DZENTINEL_GRPC
+    hs-source-dirs:   gen
+    exposed-modules:  Zentinel.Agent.Transport.GRPC
+    -- Generated from proto/agent_v2.proto by scripts/gen-proto.sh.
+    other-modules:
+      Proto.AgentV2
+      Proto.AgentV2_Fields
+    build-depends:
+      , grapesy             >= 1.1  && < 1.3
+      , proto-lens          >= 0.7  && < 0.8
+      , proto-lens-runtime  >= 0.7  && < 0.8
+      , base64-bytestring   >= 1.2  && < 1.3
 
   default-extensions:
     DeriveAnyClass
@@ -92,17 +109,30 @@ test-suite zentinel-agent-protocol-test
   type:             exitcode-stdio-1.0
   hs-source-dirs:   test
   main-is:          Main.hs
+  ghc-options:      -threaded
 
   other-modules:
-    Test.Zentinel.Agent.Types
-    Test.Zentinel.Agent.Framing
+    Zentinel.Agent.TypesSpec
+    Zentinel.Agent.WireSpec
+    Zentinel.Agent.UDSSpec
+
+  build-tool-depends:
+    , hspec-discover:hspec-discover >= 2.10 && < 2.12
 
   build-depends:
     , base
     , zentinel-agent-protocol
     , aeson
     , bytestring
+    , containers
+    , directory
+    , filepath
+    , network
     , text
-    , hspec                 >= 2.11 && < 2.12
-    , hspec-discover        >= 2.11 && < 2.12
-    , QuickCheck            >= 2.14 && < 2.15
+    , unordered-containers
+    , hspec                 >= 2.10 && < 2.12
+    , QuickCheck            >= 2.14 && < 2.16
+
+  default-extensions:
+    OverloadedStrings
+    LambdaCase
