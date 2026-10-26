@@ -29,14 +29,15 @@ helpers. It serves agents over the v2 Unix socket transport and over gRPC
 (the proxy's `zentinel.agent.v2.AgentServiceV2`, using
 [grapesy](https://hackage.haskell.org/package/grapesy)). It is not on Hackage.
 
-> **Status (checked on 2026-10-22 against Zentinel `main`, 0.6.50 plus
-> zentinel#603):** version 0.2.0.0 passes the shared
+> **Status (checked on 2026-10-22 against Zentinel 26.10_8):** version 0.2.0.0
+> passes the shared
 > [SDK conformance harness](https://github.com/zentinelproxy/zentinel/tree/main/sdk-conformance)
 > on both transports (handshake, configure, request and response headers,
 > block, body inspection, reconnect), and the quick start below passes its
 > `hello` profile. CI runs both on every push. The `configure` check needs
-> zentinel#603, which no release has yet; Zentinel 0.6.50 does not deliver an
-> agent's `config { }` block.
+> Zentinel 26.10_8 or later, which sends an agent's `config { }` block on
+> every connection (zentinel#603); releases up to 0.6.50 (26.10_7) never
+> delivered it.
 >
 > Before 0.2.0.0 the package did not build (it asked for `grpc-haskell >= 0.3`,
 > which does not exist, and `containers >= 0.7`, which conflicts with GHC 9.8's
@@ -165,8 +166,8 @@ cabal test all
 
 The package declares `tested-with: GHC == 9.8.4`. The unit tests include a
 Unix socket test that speaks the v2 frames to the server the way the proxy
-does. To run the conformance harness locally against a zentinel built from
-`main`:
+does. To run the conformance harness locally against a zentinel from release
+26.10_8 or later:
 
 ```bash
 ZENTINEL_BIN=/path/to/zentinel/target/debug/zentinel \
