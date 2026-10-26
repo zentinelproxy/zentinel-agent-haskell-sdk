@@ -6,9 +6,9 @@
 #   scripts/conformance.sh
 #
 # ZENTINEL_SRC is a checkout of zentinelproxy/zentinel (for
-# sdk-conformance/run.py); ZENTINEL_BIN a zentinel built from it (configure
-# needs zentinel#603, which is on main but not in a release yet). Without
-# both, this skips. CI runs the same checks through the
+# sdk-conformance/run.py); ZENTINEL_BIN a zentinel binary, release 26.10_8 or
+# later (the configure check needs the config { } delivery of zentinel#603,
+# first shipped there). Without both, this skips. CI runs the same checks through the
 # zentinelproxy/zentinel/sdk-conformance action.
 set -euo pipefail
 cd "$(dirname "$0")/.."
